@@ -11,7 +11,7 @@ from aius_server.analytics import Filter
 from aius_server.feishu import LEGACY_APP_ENTITY_TYPES, FeishuError
 from aius_server.labels import APP_ENTITY_TYPES
 from aius_server.sync import SyncError, today
-from conftest import D0, D1, D2, MEMBER_D1, stamped
+from conftest import D0, D1, D2, MEMBER_D1, log, stamped
 
 
 def count(env, table: str, where: str = "1=1") -> int:
@@ -238,6 +238,44 @@ def test_app_dimension_falls_back_to_the_early_entity_types(empty):
     assert run["status"] == "success" and run["stats"]["log_app"] == 2
     used = {c[5] for c in empty.feishu.calls if c[0] == "usage_page" and c[2] == "app"}
     assert used == {LEGACY_APP_ENTITY_TYPES}
+
+
+def test_resyncing_a_day_older_than_the_log_retention_keeps_what_we_already_have(empty):
+    """飞书的用量日志只保留最近一年：一年前的日子再同步会返回空或者只剩一部分，不能拿它覆盖库里已有的。"""
+    old = (today() - timedelta(days=400)).isoformat()
+    full = [log("ou_bob", "d-rd", "知识问答", 3, hour=h) for h in (9, 10, 11)]
+    empty.feishu.usage[("log", "member", old)] = stamped(full, old)
+    empty.feishu.usage[("detail", "member", old)] = [{"entity_type": 2, "entity_id": "ou_bob", "usage_value_general_ai_quota": 9}]
+    assert empty.sync(old, old)["status"] == "success" and count(empty, "usage_logs", f"usage_date='{old}'") == 3
+
+    empty.feishu.usage[("log", "member", old)] = []  # 一年后：飞书已经查不到这一天的日志了
+    empty.feishu.usage[("detail", "member", old)] = []
+    run = empty.sync(old, old)
+    assert run["status"] == "success" and count(empty, "usage_logs", f"usage_date='{old}'") == 3 and count(empty, "usage_details", f"usage_date='{old}'") == 1
+    assert agg_matches_logs(empty)
+    kept = {s["dataset"]: s for s in run["steps"] if s["status"] == "kept"}
+    assert set(kept) == {"log_member", "detail_member"} and "只保留最近一年" in kept["log_member"]["message"] and "已有 3 条" in kept["log_member"]["message"]
+
+    empty.feishu.usage[("log", "member", old)] = stamped(full[:1], old)  # 卡在保留期边上、只剩一部分
+    empty.sync(old, old)
+    assert count(empty, "usage_logs", f"usage_date='{old}'") == 3
+
+    empty.feishu.usage[("log", "member", old)] = stamped([*full, log("ou_dave", "d-rd", "知识问答", 1)], old)  # 给得不比库里少：照常替换
+    empty.sync(old, old)
+    assert count(empty, "usage_logs", f"usage_date='{old}'") == 4
+
+
+def test_recent_days_are_replaced_normally_but_never_wiped_by_an_empty_answer(env):
+    env.feishu.usage[("log", "member", D1)] = stamped(MEMBER_D1[:2], D1)  # 最近的日子变少：照常替换（以飞书为准）
+    env.sync(D1, D1)
+    assert count(env, "usage_logs", f"usage_date='{D1}' AND subject='member'") == 2
+    env.feishu.usage[("log", "member", D1)] = []  # 一条都没给：多半是接口那边的问题，不清空
+    run = env.sync(D1, D1)
+    step = next(s for s in run["steps"] if s["dataset"] == "log_member")
+    assert count(env, "usage_logs", f"usage_date='{D1}' AND subject='member'") == 2 and step["status"] == "kept" and "没有返回" in step["message"]
+    assert agg_matches_logs(env)
+    page = env.browser("admin@example.com").get(f"/logs/{run['id']}").text
+    assert "保留原数据" in page
 
 
 def test_fallback_does_not_happen_for_unrelated_errors_and_never_drops_other_app_types(empty):

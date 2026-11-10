@@ -178,7 +178,7 @@ class Analytics:
         「同步成功过」看执行记录里那天的人员用量日志——不能看那天有没有数据，周末本来就可能没人用。"""
         before = f.previous()
         synced = self.db.val(
-            "SELECT COUNT(DISTINCT usage_date) FROM sync_steps WHERE dataset='log_member' AND status='ok' AND usage_date BETWEEN ? AND ?",
+            "SELECT COUNT(DISTINCT usage_date) FROM sync_steps WHERE dataset='log_member' AND status IN ('ok','kept') AND usage_date BETWEEN ? AND ?",
             (before.start, before.end),
             0,
         )

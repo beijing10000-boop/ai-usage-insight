@@ -34,6 +34,9 @@ DATASET_LABELS = {
 }
 STATUS_LABELS = {"queued": "等待中", "running": "同步中", "success": "成功", "partial": "部分成功", "failed": "失败", "stopped": "已停止"}
 MAX_DAYS = 366  # 接口一次最多查 365 天；这里按天拉，只是不让一个任务大得离谱
+# 飞书的用量日志只保留最近一年（实测 2026-11-10 能查到的最早一天是 2025-11-11）。比这个天数更早的日子，
+# 飞书给的比库里少就保留库里的；留几天余量，免得卡在保留期边上、只剩半天数据的那一天被覆盖
+RETENTION_GUARD_DAYS = 355
 MAX_PAGES = 20000
 
 
@@ -175,6 +178,13 @@ class SyncEngine:
                     continue
                 try:
                     collected, pages, app_types = self._fetch(run_id, kind, subject, day, app_types)
+                    kept = self._keep_existing(kind, subject, day, len(collected), app_types)
+                    if kept:  # 飞书这次给的比库里已有的少（过了保留期、或者接口返回空）：不覆盖
+                        stats["pages"] += pages
+                        done.add(key)
+                        self._step(run_id, day, dataset, pages, 0, "kept", kept)
+                        self._save(run_id, done, stats)
+                        continue
                     rows = self._write(kind, subject, day, collected, app_types)
                 except FeishuError as e:
                     stats["failed"] += 1
@@ -275,12 +285,38 @@ class SyncEngine:
             )  # fmt: skip
         return rows
 
-    def _write(self, kind: str, subject: str, day: str, rows: list[tuple], app_types: tuple[int, ...] = APP_ENTITY_TYPES) -> int:
-        # 整批替换的范围。应用维度退回早期四类时，只替换这四类（和没有类型的），别把以前同步到的另外两类删掉
-        scope, scope_params = "usage_date=? AND subject=?", [day, subject]
+    @staticmethod
+    def _scope(subject: str, day: str, app_types: tuple[int, ...]) -> tuple[str, list]:
+        """整批替换的范围。应用维度退回早期四类时，只替换这四类（和没有类型的），别把以前同步到的另外两类删掉。"""
+        scope, params = "usage_date=? AND subject=?", [day, subject]
         if subject == "app" and app_types != APP_ENTITY_TYPES:
             scope += f" AND (entity_type IS NULL OR entity_type IN ({','.join('?' * len(app_types))}))"
-            scope_params += list(app_types)
+            params += list(app_types)
+        return scope, params
+
+    def _keep_existing(self, kind: str, subject: str, day: str, fetched: int, app_types: tuple[int, ...]) -> str:
+        """这次拉到的数据要不要放弃、保留库里已有的。要保留时返回写进执行日志的原因，否则返回空串。
+
+        - 飞书的用量日志只保留最近一年，一年前的日子再同步会返回空（或者只剩一部分）。库里早先同步下来的
+          比飞书现在给的多，就保留库里的——那是已经查不到的数据，整批替换就等于把它删了。
+        - 任何日子，库里有数据而飞书这次一条都没给，也不覆盖：用量记录不会凭空消失，更可能是接口那边的问题。
+        库里本来没有、或者飞书给的不比库里少的，照常整批替换。"""
+        scope, params = self._scope(subject, day, app_types)
+        table = "usage_logs" if kind == "log" else "usage_details"
+        existing = self.db.val(f"SELECT COUNT(*) FROM {table} WHERE {scope}", params, 0)
+        if not existing or fetched >= existing:
+            return ""
+        label = DATASET_LABELS[f"{kind}_{subject}"]
+        aged = date.fromisoformat(day) < today() - timedelta(days=RETENTION_GUARD_DAYS)
+        if aged:
+            note = "飞书只保留最近一年的用量日志" if kind == "log" else "这一天已经超出飞书的保留期限"
+            return f"{note}，这次只返回了 {fetched:,} 条{label}，库里已有 {existing:,} 条：保留原数据，没有覆盖"
+        if fetched == 0:
+            return f"飞书这次没有返回这一天的{label}，库里已有 {existing:,} 条：保留原数据，没有覆盖。如果确认飞书那边的数据确实没有了，请联系管理员处理"
+        return ""
+
+    def _write(self, kind: str, subject: str, day: str, rows: list[tuple], app_types: tuple[int, ...] = APP_ENTITY_TYPES) -> int:
+        scope, scope_params = self._scope(subject, day, app_types)
         if kind == "log":
             with self.db.tx() as c:
                 c.execute(f"DELETE FROM usage_logs WHERE {scope}", scope_params)

@@ -36,7 +36,7 @@
           <td>{{ s.dataset_label }}</td>
           <td class="num">{{ s.pages or "—" }}</td>
           <td class="num">{{ s.rows|num if s.dataset != "names" else "—" }}</td>
-          <td><span class="status {{ 'ok' if s.status == 'ok' else 'failed' }}">{{ "完成" if s.status == "ok" else "失败" }}</span></td>
+          <td>{% set look = {"ok": ("ok", "完成"), "kept": ("warn", "保留原数据")}.get(s.status, ("failed", "失败")) %}<span class="status {{ look[0] }}">{{ look[1] }}</span></td>
           <td>{{ s.message }}</td>
         </tr>
         {% endfor %}
