@@ -1,0 +1,37 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import paging %}
+{% set title = "操作审计" %}
+{% set section = "治理" %}
+
+{% block content %}
+<section class="panel">
+  <form class="toolbar" method="get" action="/audit">
+    <select name="action" aria-label="操作类型">
+      <option value="">全部操作</option>
+      {% for key, name in actions.items() %}<option value="{{ key }}"{{ " selected" if keep.action == key }}>{{ name }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="btn">筛选</button>
+    {% if keep.action %}<a class="btn subtle" href="/audit">重置</a>{% endif %}
+  </form>
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>谁</th><th>操作</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="nowrap" title="{{ r.at|ts }}">{{ r.at|ts }}</td>
+          <td>{{ r.actor_name }}</td>
+          <td><span class="tag">{{ r.action_label }}</span></td>
+          <td>{{ r.detail }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ paging(pager, "/audit", keep) }}
+  {% else %}
+  <p class="empty">没有符合条件的操作记录。</p>
+  {% endif %}
+</section>
+{% endblock %}

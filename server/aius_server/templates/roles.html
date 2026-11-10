@@ -1,0 +1,53 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import suggest_input %}
+{% set title = "角色权限" %}
+{% set section = "治理" %}
+
+{% block content %}
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head"><div><h2>{{ labels[admin] }}</h2><p class="mono">{{ admin }}</p></div><span class="tag info">{{ admins|length }} 人</span></div>
+    <p>{{ notes[admin] }}。</p>
+    <p class="help">能看全企业的数据，能发起同步、分配额度、维护应用映射、配置周报、管理角色。</p>
+  </section>
+  <section class="panel">
+    <div class="section-head"><div><h2>{{ labels[regular] }}</h2><p class="mono">{{ regular }}</p></div><span class="tag">其余 {{ [headcount - admins|length, 0]|max }} 人</span></div>
+    <p>{{ notes[regular] }}。</p>
+    <p class="help">登录后自动就是普通用户，不用单独添加。通讯录里是部门负责人的（现在有 {{ leaders }} 个部门设置了负责人），还能看自己负责的部门及其下级部门的运营数据。</p>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="section-head"><div><h2>运营管理员名单</h2><p>在这里添加的立即生效；「固定」的是部署时写在环境变量 AIUS_ADMINS 里的，要改服务器上的 .env</p></div></div>
+  <form method="post" action="/roles" class="add-row">
+    <input type="hidden" name="action" value="grant" />
+    <label class="offscreen-label" for="role-user">要设为运营管理员的人</label>
+    {{ suggest_input("role-user", "user", "user", "输入姓名，从列表里选") }}
+    <button type="submit" class="btn primary">设为运营管理员</button>
+  </form>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>姓名</th><th>来源</th><th>添加时间</th><th></th></tr></thead>
+      <tbody>
+        {% for a in admins %}
+        <tr>
+          <td><span class="cell-title">{{ a.name or "还没登录过" }}</span>{% if a.fixed %}<small class="mono">{{ a.key }}</small>{% endif %}</td>
+          <td>{% if a.fixed %}<span class="tag">固定（环境变量）</span>{% else %}页面添加{% if a.granted_by %}<small>{{ a.granted_by }} 添加</small>{% endif %}{% endif %}</td>
+          <td class="nowrap">{{ a.granted_at|ts }}</td>
+          <td>
+            {% if not a.fixed %}
+            <form method="post" action="/roles" class="inline" data-confirm="取消 {{ a.name }} 的运营管理员角色？" data-confirm-message="取消后他只能看自己的用量（如果是部门负责人，还能看负责的部门）。" data-confirm-text="取消角色" data-danger>
+              <input type="hidden" name="action" value="revoke" /><input type="hidden" name="user" value="{{ a.open_id }}" />
+              <button type="submit" class="btn small danger">取消角色</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="empty">还没有运营管理员。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

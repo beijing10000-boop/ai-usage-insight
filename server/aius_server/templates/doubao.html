@@ -1,0 +1,98 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import range_bar, stat, delta, change_stat, bar, chart, shares, trail, paging %}
+{% set title = "豆包运营" %}
+{% set section = "洞察" %}
+{% set keep = {"dept": parent if crumbs else "", "by": by if by != "day" else ""} %}
+{% set unit = {"day": "每天", "week": "每周", "month": "每月"}[by] %}
+
+{% block content %}
+{{ range_bar(rng, "/doubao-ops", keep) }}
+{{ trail(crumbs, "/doubao-ops", dict(rng.query, by=keep.by)) }}
+
+<p class="notice">这里只统计<b>豆包工作</b>的用量：场景以「豆包工作」开头的人员用量日志（不含「豆包工作伙伴」）。</p>
+
+<div class="stats">
+  {{ stat("豆包用量（点）", k.total|compact, "折算 " ~ k.cost|money, full=k.total) }}
+  {{ change_stat(k) }}
+  {{ stat("日均活跃人数", k.avg_dau|num(1), "每天用过豆包的人数，按 " ~ k.days ~ " 天平均") }}
+  {{ stat("活跃人数", k.active_members|num, "这段时间用过豆包的人") }}
+  {{ stat("人均用量（点）", k.per_capita|compact, "按活跃人数平均", full=k.per_capita) }}
+  {{ stat("使用场景", scene_count, "有用量的场景数") }}
+</div>
+
+<section class="panel">
+  <div class="section-head">
+    <div><h2>趋势</h2><p>{{ unit }}的用量、活跃人数和人均用量。三个指标量级不同，所以分开画</p></div>
+    <div class="segmented" role="group" aria-label="汇总粒度">
+      {% for key, name in (("day", "按日"), ("week", "按周"), ("month", "按月")) %}
+      <a class="{{ 'active' if by == key }}" href="{{ url_with('/doubao-ops', by=key if key != 'day' else '', dept=keep.dept, **rng.query) }}">{{ name }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="grid3">
+    <div><h3>用量（点）</h3>{{ chart(usage, unit ~ "的豆包用量", "这段时间没有豆包工作的用量。", when="时间") }}</div>
+    <div><h3>活跃人数</h3>{{ chart(people, unit ~ "的豆包活跃人数", "这段时间没有豆包工作的用量。", when="时间") }}</div>
+    <div><h3>人均用量（点）</h3>{{ chart(per_capita, unit ~ "的豆包人均用量", "这段时间没有豆包工作的用量。", when="时间") }}</div>
+  </div>
+</section>
+
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head"><div><h2>部门统计</h2><p>每个部门的用量都包含它的下级部门；点部门名继续往下看</p></div></div>
+    {% if depts %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>部门</th><th class="num">用量（点）</th><th>占比</th><th class="num">活跃 / 人数</th><th class="num">人均</th><th class="num">环比</th></tr></thead>
+        <tbody>
+          {% for d in depts %}
+          <tr>
+            <td>{% if d.drill %}<a class="cell-title" href="{{ url_with('/doubao-ops', dept=d.id, by=keep.by, **rng.query) }}">{{ d.name }}</a>{% else %}<span class="cell-title">{{ d.name }}</span>{% endif %}</td>
+            <td class="num">{{ d.amount|num }}</td>
+            <td>{{ bar(d.share) }}<small>{{ d.share|num(1) }}%</small></td>
+            <td class="num">{{ d.users }}{% if d.headcount %} / {{ d.headcount }}{% endif %}</td>
+            <td class="num">{{ d.per_capita|num(1) }}</td>
+            <td class="num">{{ delta(d.change) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">这段时间没有部门用了豆包工作。</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="section-head"><div><h2>场景分布</h2><p>豆包工作下各个场景的用量</p></div></div>
+    {{ shares(scenes, "这段时间没有豆包工作的用量。", extra="users") }}
+  </section>
+</div>
+
+<section class="panel" id="members">
+  <div class="section-head"><div><h2>人员明细</h2><p>这段时间用过豆包工作的 {{ pager.total }} 个人，按用量从高到低</p></div></div>
+  {% if members %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>姓名</th><th class="num">用量（点）</th><th>占比</th><th class="num">次数</th><th class="num">活跃天数</th><th>最近使用</th><th>主要场景</th><th class="num">环比</th></tr></thead>
+      <tbody>
+        {% for m in members %}
+        <tr>
+          <td><a class="cell-title" href="{{ url_with('/self-usage', member=m.id, **rng.query) }}">{{ m.name }}</a><small>{{ m.dept_path }}</small></td>
+          <td class="num">{{ m.amount|num }}</td>
+          <td>{{ bar(m.share) }}<small>{{ m.share|num(1) }}%</small></td>
+          <td class="num">{{ m.records|num }}</td>
+          <td class="num">{{ m.active_days }}</td>
+          <td class="nowrap">{{ m.last_used }}</td>
+          <td>{{ m.main }}</td>
+          <td class="num">{{ delta(m.change) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ paging(pager, "/doubao-ops", dict(rng.query, **keep)) }}
+  {% else %}
+  <p class="empty">这段时间还没有人用豆包工作。</p>
+  {% endif %}
+</section>
+{% endblock %}

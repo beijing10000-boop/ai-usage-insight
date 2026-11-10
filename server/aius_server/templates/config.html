@@ -1,0 +1,148 @@
+{% extends "_base.html" %}
+{% set title = "映射与推送" %}
+{% set section = "运营" %}
+
+{% block content %}
+<section class="panel" id="apps">
+  <div class="section-head">
+    <div><h2>应用映射</h2><p>把用量数据里的应用 ID 显示成名称。名称来源依次是：手工维护 → Aily 应用统计 → 开放平台应用信息；都没有就显示 ID{% if unnamed %}。现在有 <b>{{ unnamed }}</b> 个应用还没有名称{% endif %}</p></div>
+  </div>
+  {% if not aily %}<p class="notice">没有配置 Aily 应用凭证（AILY_APP_ID / AILY_APP_SECRET），Aily 工作流应用和智能体的名称不会自动解析，需要在这里手工填。</p>{% endif %}
+  <form method="post" action="/config" class="add-row">
+    <input type="hidden" name="action" value="mapping_save" />
+    <label class="offscreen-label" for="map-id">应用 ID</label>
+    <input id="map-id" name="app_id" required maxlength="200" placeholder="应用 ID，例如 cli_xxx、spring_xxx__c" />
+    <label class="offscreen-label" for="map-name">应用名称</label>
+    <input id="map-name" name="name" required maxlength="200" placeholder="显示的名称" />
+    <button type="submit" class="btn">保存名称</button>
+  </form>
+  {% if apps %}
+  <div class="toolbar"><input type="search" data-filter-input="app-table" placeholder="按名称或应用 ID 筛选" aria-label="筛选应用" /></div>
+  <div class="table-wrap">
+    <table id="app-table">
+      <thead><tr><th>应用</th><th>应用 ID</th><th>类型</th><th>名称来源</th><th class="num">累计用量（点）</th><th>最近使用</th><th></th></tr></thead>
+      <tbody>
+        {% for a in apps %}
+        <tr>
+          <td>{% if a.name %}<span class="cell-title">{{ a.name }}</span>{% else %}<span class="tag warn">还没有名称</span>{% endif %}</td>
+          <td class="mono">{{ a.id }}</td>
+          <td>{{ a.type or "—" }}</td>
+          <td>{{ sources.get(a.source, "—") }}</td>
+          <td class="num">{{ a.amount|num if a.amount else "—" }}</td>
+          <td class="nowrap">{{ a.last or "—" }}</td>
+          <td>
+            <div class="actions">
+              <button type="button" class="btn small" data-fill="map-id" data-fill-value="{{ a.id }}" data-fill-also="map-name" data-fill-also-value="{{ a.name }}">{{ "改名" if a.name else "填名称" }}</button>
+              {% if a.source == "manual" %}
+              <form method="post" action="/config" class="inline" data-confirm="删除「{{ a.name }}」的手工名称？" data-confirm-message="删除后，下次同步会重新自动解析名称；解析不到就显示应用 ID。" data-confirm-text="删除" data-danger>
+                <input type="hidden" name="action" value="mapping_delete" /><input type="hidden" name="app_id" value="{{ a.id }}" />
+                <button type="submit" class="btn small danger">删除</button>
+              </form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        <tr data-empty hidden><td colspan="7" class="empty">没有符合筛选条件的应用。</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有应用用量。同步之后，有用量的应用会列在这里。</p>
+  {% endif %}
+</section>
+
+<section class="panel" id="pricing">
+  <div class="section-head"><div><h2>点数单价</h2><p>折算费用 = 点数 × 单价。驾驶舱、明细、周报里的费用都按这个单价算，只是估算，不是账单</p></div></div>
+  <form method="post" action="/config" class="add-row">
+    <input type="hidden" name="action" value="pricing" />
+    <label class="inline-field" for="price">1 点 =</label>
+    <input id="price" name="point_price" type="number" min="0" step="any" required value="{{ price }}" />
+    <span class="muted">元</span>
+    <button type="submit" class="btn">保存单价</button>
+  </form>
+</section>
+
+<section class="panel" id="report">
+  <div class="section-head">
+    <div><h2>AI 用量周报</h2><p>每周给每个人发一张飞书卡片：上周用了多少点、折算费用、用在哪几类额度、最常用的 5 个场景、累计用量</p></div>
+    <div class="actions">
+      <form method="post" action="/config" class="inline">
+        <input type="hidden" name="action" value="report_test" />
+        <button type="submit" class="btn small">{{ icon("send") }}测试发送给我</button>
+      </form>
+      <form method="post" action="/config" class="inline" data-confirm="现在就推送 {{ period.start }} ~ {{ period.end }} 的周报？" data-confirm-message="会按下面保存的推送范围，给每个人发一张飞书卡片。发出去的消息不能撤回。" data-confirm-text="推送">
+        <input type="hidden" name="action" value="report_push" />
+        <button type="submit" class="btn small">立即全量推送</button>
+      </form>
+    </div>
+  </div>
+  <p class="notice">推送用应用的机器人发消息：需要在飞书开放平台给应用开启「机器人」能力，并开通权限 <code>im:message:send_as_bot</code>。先点「测试发送给我」确认能收到。</p>
+  <form method="post" action="/config">
+    <input type="hidden" name="action" value="report" />
+    <div class="fields three">
+      <div>
+        <label for="r-enabled">定时推送</label>
+        <select id="r-enabled" name="enabled">
+          <option value="1"{{ " selected" if report.enabled }}>开启</option>
+          <option value="0"{{ " selected" if not report.enabled }}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label for="r-weekday">推送日</label>
+        <select id="r-weekday" name="weekday">
+          {% for key, name in weekdays.items() %}<option value="{{ key }}"{{ " selected" if report.weekday == key }}>每{{ name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="r-hour">推送时间</label>
+        <select id="r-hour" name="hour">
+          {% for h in range(24) %}<option value="{{ h }}"{{ " selected" if report.hour == h }}>{{ "%02d"|format(h) }}:00</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="r-scope">推送范围</label>
+        <select id="r-scope" name="scope">
+          <option value="active"{{ " selected" if report.scope == "active" }}>上周有用量的人</option>
+          <option value="all"{{ " selected" if report.scope == "all" }}>通讯录里所有人</option>
+        </select>
+      </div>
+      <div>
+        <label for="r-since">累计起始日</label>
+        <input id="r-since" name="since" type="date" value="{{ report.since }}" />
+        <p class="help">卡片上的「累计」从这天算起；不填是当年 1 月 1 日。</p>
+      </div>
+      <div>
+        <label>下一期内容</label>
+        <p class="help">{{ period.start }} ~ {{ period.end }} 的用量{% if report.last_push_date %}；上次定时推送是 {{ report.last_push_date }}{% endif %}</p>
+      </div>
+    </div>
+    <div class="form-actions"><button type="submit" class="btn primary">保存推送配置</button></div>
+  </form>
+
+  <h3>推送记录</h3>
+  {% if runs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>周报周期</th><th>方式</th><th>结果</th><th class="num">人数</th><th class="num">成功</th><th class="num">失败</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td class="nowrap">{{ r.started_at|ts }}</td>
+          <td class="nowrap">{{ r.week_start }} ~ {{ r.week_end }}</td>
+          <td>{{ {"schedule": "定时", "manual": "手动全量", "test": "测试"}.get(r.trigger, r.trigger) }}<small>{{ r.actor_name }}</small></td>
+          <td><span class="status {{ r.status }}">{{ {"running": "推送中", "success": "成功", "partial": "部分成功", "failed": "失败"}.get(r.status, r.status) }}</span></td>
+          <td class="num">{{ r.total }}</td>
+          <td class="num">{{ r.sent }}</td>
+          <td class="num">{{ r.failed or "—" }}</td>
+          <td>{{ r.error }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有推送过周报。</p>
+  {% endif %}
+</section>
+{% endblock %}

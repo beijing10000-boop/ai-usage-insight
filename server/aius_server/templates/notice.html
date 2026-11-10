@@ -1,0 +1,10 @@
+{% extends "_base.html" %}
+{# 控制台里的整页提示：说明哪里不行，给一个去处。 #}
+{% set section = "提示" %}
+{% block content %}
+<section class="panel empty-state">
+  <h2>{{ title }}</h2>
+  <p>{{ text }}</p>
+  <div class="actions center"><a class="btn primary" href="{{ back[1] }}">{{ back[0] }}</a></div>
+</section>
+{% endblock %}

@@ -1,0 +1,16 @@
+services:
+  ai-usage-insight:
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: ai-usage-insight:0.1.0
+    env_file: .env
+    ports:
+      - "${AIUS_BIND:-0.0.0.0}:${AIUS_PORT:-8090}:8080"
+    volumes:
+      - aius-data:/data
+    restart: unless-stopped
+
+volumes:
+  aius-data:

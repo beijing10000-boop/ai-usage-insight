@@ -1,0 +1,14 @@
+{% extends "_plain.html" %}
+{% set title = "开发模式登录" %}
+{% block eyebrow %}仅本地开发{% endblock %}
+{% block body %}
+<p class="notice warn" role="status">当前是 AIUS_DEV_FAKE_LOGIN 开发模式：不经过飞书，数据是演示数据。生产环境必须关闭。</p>
+<form method="get" action="/auth/callback" class="request-form">
+  <input type="hidden" name="state" value="{{ state }}" />
+  <label for="email">邮箱</label>
+  <input id="email" name="email" type="email" required placeholder="admin@example.com" />
+  <label for="name">姓名（可以不填）</label>
+  <input id="name" name="name" placeholder="按邮箱在演示通讯录里找" />
+  <button type="submit" class="btn primary">登录</button>
+</form>
+{% endblock %}

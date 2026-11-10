@@ -1,0 +1,120 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import stat %}
+{% set title = "额度分配" %}
+{% set section = "运营" %}
+
+{% block actions %}
+<button type="button" class="btn primary" data-open-dialog="quota-dialog">新增额度</button>
+{% endblock %}
+
+{% block content %}
+<div class="page-intro">
+  <p>给部门、人员或应用在一个周期里分配点数，平台按同步到的用量日志算出已用、剩余和使用率。部门的已用量包含它的下级部门。这里只做对账和提醒，不会限制飞书里的实际使用。</p>
+</div>
+
+<div class="stats">
+  {{ stat("当前生效", summary.count, "周期包含今天、状态为启用的额度") }}
+  {{ stat("已分配（点）", summary.allocated|compact, "折算 " ~ (summary.allocated * price)|money, full=summary.allocated) }}
+  {{ stat("已使用（点）", summary.used|compact, ("整体使用率 " ~ summary.rate|num(1) ~ "%") if summary.rate is not none else "还没有分配额度", full=summary.used) }}
+  <div class="stat{{ ' attention' if summary.over }}">
+    <div class="label">已超额 / 即将用完</div>
+    <div class="value">{{ summary.over }} / {{ summary.near }}</div>
+    <div class="hint">使用率 ≥ 100% / ≥ 90%</div>
+  </div>
+</div>
+
+<section class="panel">
+  <div class="section-head"><div><h2>额度记录</h2><p>使用率 ≥ 75% 偏高，≥ 90% 即将用完，≥ 100% 已超额</p></div></div>
+  {% if rows %}
+  <div class="toolbar"><input type="search" data-filter-input="quota-table" placeholder="按对象、类型或备注筛选" aria-label="筛选额度记录" /></div>
+  <div class="table-wrap">
+    <table id="quota-table">
+      <thead><tr><th>对象</th><th>周期</th><th class="num">分配（点）</th><th class="num">已用（点）</th><th class="num">剩余（点）</th><th>使用率</th><th>状态</th><th></th></tr></thead>
+      <tbody>
+        {% for q in rows %}
+        <tr>
+          <td><span class="cell-title">{{ q.name }}</span><small>{{ q.dimension_label }}{% if q.note %} · {{ q.note }}{% endif %}</small></td>
+          <td class="nowrap">{{ q.period_start }} ~ {{ q.period_end }}<small>{{ q.period }}</small></td>
+          <td class="num">{{ q.amount|num }}</td>
+          <td class="num">{{ q.used|num }}</td>
+          <td class="num">{{ q.remaining|num }}</td>
+          <td>
+            {% if q.rate is not none %}
+            <progress class="mini meter {{ q.state }}" max="100" value="{{ [q.rate, 100]|min }}" aria-hidden="true"></progress><small>{{ q.rate|num(1) }}%</small>
+            {% else %}—{% endif %}
+          </td>
+          <td>{% if q.state %}<span class="status {{ q.state }}">{{ q.state_label }}</span>{% else %}<span class="tag">{{ q.state_label }}</span>{% endif %}</td>
+          <td>
+            <div class="actions">
+              <a class="btn small" href="/quota?edit={{ q.id }}">修改</a>
+              <form method="post" action="/quota" class="inline">
+                <input type="hidden" name="id" value="{{ q.id }}" /><input type="hidden" name="action" value="{{ 'disable' if q.enabled else 'enable' }}" />
+                <button type="submit" class="btn small">{{ "停用" if q.enabled else "启用" }}</button>
+              </form>
+              <form method="post" action="/quota" class="inline" data-confirm="删除「{{ q.name }}」的这条额度记录？" data-confirm-message="删除后无法恢复；用量数据不受影响。" data-confirm-text="删除" data-danger>
+                <input type="hidden" name="id" value="{{ q.id }}" /><input type="hidden" name="action" value="delete" />
+                <button type="submit" class="btn small danger">删除</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        <tr data-empty hidden><td colspan="8" class="empty">没有符合筛选条件的额度记录。</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h2>还没有分配额度</h2>
+    <p>点右上角「新增额度」，给一个部门、一个人或一个应用设定本月（或任意周期）可以用多少点。之后这里会显示实际用了多少、还剩多少。</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block dialogs %}
+<dialog id="quota-dialog" aria-labelledby="quota-title"{{ " data-open" if editing }}>
+  <form method="post" action="/quota">
+    <div class="modal-title">
+      <h2 id="quota-title">{{ "修改额度" if editing else "新增额度" }}</h2>
+      {% if editing %}<a class="close" href="/quota" data-icon="close" aria-label="关闭"></a>{% else %}<button class="close" type="button" data-close-dialog data-icon="close" aria-label="关闭"></button>{% endif %}
+    </div>
+    <input type="hidden" name="action" value="save" />
+    {% if editing %}<input type="hidden" name="id" value="{{ editing.id }}" />{% endif %}
+    <div class="fields">
+      <div>
+        <label for="q-dimension">对象类型</label>
+        <select id="q-dimension" name="dimension" data-suggest-kind="q-target">
+          {% for key, name in dimensions.items() %}<option value="{{ key }}"{{ " selected" if editing and editing.dimension == key }}>{{ name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="q-target">分配对象</label>
+        <input id="q-target" name="target" list="q-target-list" data-suggest="dept" autocomplete="off" required value="{{ editing.target_id if editing }}" placeholder="输入名称，从列表里选" />
+        <datalist id="q-target-list"></datalist>
+        <p class="help">部门和人员从联想列表里选；应用填应用 ID（和同步数据里的应用 ID 一致）。</p>
+      </div>
+      <div>
+        <label for="q-amount">分配额度（点）</label>
+        <input id="q-amount" name="amount" type="number" min="0" step="any" required value="{{ editing.amount if editing }}" placeholder="例如 20000" />
+      </div>
+      <div>
+        <label for="q-note">备注（可以不填）</label>
+        <input id="q-note" name="note" maxlength="200" value="{{ editing.note if editing }}" placeholder="例如 Q4 预算" />
+      </div>
+      <div>
+        <label for="q-start">周期开始</label>
+        <input id="q-start" name="period_start" type="date" required value="{{ editing.period_start if editing else default_start }}" />
+      </div>
+      <div>
+        <label for="q-end">周期结束</label>
+        <input id="q-end" name="period_end" type="date" required value="{{ editing.period_end if editing else default_end }}" />
+      </div>
+    </div>
+    <div class="modal-actions">
+      {% if editing %}<a class="btn" href="/quota">取消</a>{% else %}<button type="button" class="btn" data-close-dialog>取消</button>{% endif %}
+      <button type="submit" class="btn primary">保存</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}

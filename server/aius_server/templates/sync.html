@@ -1,0 +1,149 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import run_status %}
+{% set title = "同步管理" %}
+{% set section = "运营" %}
+
+{% macro row(name, desc, value, state="") %}
+<div class="row-item">
+  <div><strong>{{ name }}</strong><p>{{ desc }}</p></div>
+  <div class="row-meta">{% if state %}<span class="status {{ state }}">{{ value }}</span>{% else %}<strong>{{ value }}</strong>{% endif %}</div>
+</div>
+{% endmacro %}
+
+{% macro result(run) %}
+<div class="stats compact">
+  <div class="stat"><div class="label">人员日志</div><div class="value small-value">{{ run.stats.log_member|num }}</div><div class="hint">{{ run.stats.members }} 人</div></div>
+  <div class="stat"><div class="label">涉及部门</div><div class="value small-value">{{ run.stats.depts|num }}</div><div class="hint">有用量的部门数</div></div>
+  <div class="stat"><div class="label">应用日志</div><div class="value small-value">{{ run.stats.log_app|num }}</div><div class="hint">{{ run.stats.apps }} 个应用</div></div>
+  <div class="stat"><div class="label">统计详情</div><div class="value small-value">{{ (run.stats.detail_member + run.stats.detail_app)|num }}</div><div class="hint">人员 + 应用，T+1</div></div>
+  <div class="stat{{ ' attention' if run.stats.failed }}"><div class="label">失败</div><div class="value small-value">{{ run.stats.failed }}</div><div class="hint">{{ run.stats.pages }} 次接口分页</div></div>
+</div>
+{% endmacro %}
+
+{% block content %}
+{% if dev %}<p class="notice error" role="alert">当前是开发模式（AIUS_DEV_FAKE_LOGIN）：登录不经过飞书，同步到的是演示数据。生产环境必须关闭。</p>{% endif %}
+
+<div class="grid2">
+  <section class="panel" id="feishu">
+    <div class="section-head">
+      <div><h2>飞书应用凭证</h2><p>登录、通讯录和 AI 用量接口都用这个企业自建应用；凭证写在服务器的 .env 里，不在页面上保存和显示</p></div>
+      <form method="post" action="/sync" class="inline">
+        <input type="hidden" name="action" value="check" />
+        <button type="submit" class="btn small">测试连接</button>
+      </form>
+    </div>
+    {{ row("企业自建应用", "FEISHU_APP_ID / FEISHU_APP_SECRET", app_id) }}
+    {{ row("Aily 应用", "可选（AILY_APP_ID / AILY_APP_SECRET）：用来把 Aily 应用和智能体的 ID 显示成名称", aily or "未配置", "" if aily else "warn") }}
+    {% if check %}
+    {% if check.ok %}
+    {{ row("连接状态", (check.tenant ~ " · " if check.tenant) ~ check.at|ago ~ "测试", "已连接", "ok") }}
+    {% if check.aily is string %}<p class="notice warn">Aily 应用凭证不可用：{{ check.aily }}</p>{% endif %}
+    {% else %}
+    {{ row("连接状态", check.at|ago ~ "测试", "连接失败", "failed") }}
+    <p class="error" role="alert">{{ check.error }}</p>
+    <p class="help">常见原因：App ID 或 App Secret 填错（注意不要带空格）；开放平台应用还没有发布版本。</p>
+    {% endif %}
+    {% else %}
+    {{ row("连接状态", "点「测试连接」验证凭证是否可用", "未测试", "untested") }}
+    {% endif %}
+    <p class="help">「已连接」只说明凭证可用、应用已发布。AI 用量权限（admin:ai_usage_log:read、admin:ai_usage_detail:read）有没有生效，要到第一次同步才知道。</p>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div><h2>通讯录</h2><p>把用量数据里的 ID 显示成姓名和部门，按部门树汇总；每 {{ directory.hours }} 小时自动同步一次</p></div>
+      <form method="post" action="/sync" class="inline">
+        <input type="hidden" name="action" value="directory" />
+        <button type="submit" class="btn small">立即同步通讯录</button>
+      </form>
+    </div>
+    {{ row("上次同步", "在职成员和部门的快照", directory.at|ago("还没同步过"), "ok" if directory.at else "warn") }}
+    {{ row("成员", "通讯录权限范围内的在职成员", directory.users ~ " 人") }}
+    {{ row("部门", "含各级子部门", directory.depts ~ " 个") }}
+    {% if directory.error %}
+    <p class="error" role="alert">最近一次同步失败：{{ directory.error }}</p>
+    <p class="help">人员或部门显示成 ID，多半是通讯录权限或数据范围不够：给应用补上用户、部门基础信息权限，并把通讯录权限范围设为全部员工。</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel" id="manual">
+  <div class="section-head">
+    <div><h2>手动同步</h2><p>选一段日期，把这几天的 AI 用量日志和统计详情从飞书拉下来。{% if latest %}现有数据：{{ earliest }} ~ {{ latest }}。{% else %}还没有同步过数据，建议先同步昨天一天试试。{% endif %}</p></div>
+  </div>
+  {% if running %}
+  <div id="sync-progress" data-status-url="/sync/status" data-units="{{ running.stats.units }}">
+    <div class="row-item">
+      <div>
+        <strong>任务 #{{ running.id }}</strong> {{ run_status(running) }}
+        <p>{{ running.start_date }} ~ {{ running.end_date }} · {{ running.actor_name }}发起{% if running.resume_count %} · 已自动续跑 {{ running.resume_count }} 次{% endif %}</p>
+      </div>
+      <form method="post" action="/sync" class="inline" data-confirm="停止任务 #{{ running.id }}？" data-confirm-message="拉完当前这一页就停。已经写入的数据会保留，没同步到的日期之后可以再同步。" data-confirm-text="停止" data-danger>
+        <input type="hidden" name="action" value="stop" /><input type="hidden" name="id" value="{{ running.id }}" />
+        <button type="submit" class="btn small danger"{{ " disabled" if running.stop_requested }}>{{ "正在停止…" if running.stop_requested else "停止任务" }}</button>
+      </form>
+    </div>
+    <progress id="sync-bar" max="{{ [running.stats.units, 1]|max }}" value="{{ running.done }}" aria-label="同步进度"></progress>
+    <p class="small muted" id="sync-text">已完成 {{ running.done }} / {{ running.stats.units }} 个数据集，写入 {{ running.total_rows|num }} 条</p>
+    <p class="help">两个用量接口限频每秒 1 次，日期多、记录多时要等一会儿。可以离开这个页面，任务会在后台继续。</p>
+  </div>
+  {% else %}
+  <form method="post" action="/sync" class="sync-form" data-confirm="开始同步所选的这段日期？"
+    data-confirm-message="会从飞书重新拉这几天的 AI 用量，并整批替换这几天已有的数据（不会重复）。日期多时需要一些时间，任务在后台进行，可以随时停止。" data-confirm-text="开始同步">
+    <input type="hidden" name="action" value="start" />
+    <label class="inline-field">从 <input type="date" name="start" value="{{ yesterday }}" max="{{ today }}" required aria-label="开始日期" /></label>
+    <label class="inline-field">到 <input type="date" name="end" value="{{ yesterday }}" max="{{ today }}" required aria-label="结束日期" /></label>
+    <button type="submit" class="btn primary">开始同步</button>
+  </form>
+  <p class="help">重新同步已经同步过的日期是安全的：每天的数据整批替换，不会重复。用量日志是准实时的（当天也能同步，但当天的数据还不完整）；统计详情是 T+1，当天的要到第二天才有。飞书建议避开凌晨 2 点左右的请求高峰。</p>
+  {% endif %}
+
+  {% if last and not running %}
+  <hr />
+  <div class="row-item">
+    <div>
+      <strong>最近一次：任务 #{{ last.id }}</strong> {{ run_status(last) }}
+      <p>{{ last.start_date }} ~ {{ last.end_date }} · {{ last.actor_name }}{{ "" if last.actor == "system" else "发起" }} · {{ last.finished_at|ago }}结束 · 用时 {{ last.seconds|duration }}</p>
+    </div>
+    <a class="btn small" href="/logs/{{ last.id }}">查看详情</a>
+  </div>
+  {{ result(last) }}
+  {% if last.error %}<p class="error" role="alert">{{ last.error }}</p>{% endif %}
+  {% if last.status == "partial" %}<p class="help">部分成功：成功的数据集已经写入。先在详情里看失败原因，处理后对同一段日期重新同步即可（不会重复）。</p>{% endif %}
+  {% if last.status == "failed" %}<p class="help">连接成功但同步失败，多半是 AI 用量权限没开通、没审核或还没生效：回到开放平台的权限管理核对两个 AI 用量权限，并重新发布应用版本。</p>{% endif %}
+  {% endif %}
+</section>
+
+<section class="panel" id="schedule">
+  <div class="section-head">
+    <div><h2>每日定时同步</h2><p>每天到点自动同步前几天的数据{% if schedule.last_auto_date %}；上次自动同步是 {{ schedule.last_auto_date }}{% endif %}</p></div>
+  </div>
+  <form method="post" action="/sync">
+    <input type="hidden" name="action" value="schedule" />
+    <div class="fields three">
+      <div>
+        <label for="s-enabled">定时同步</label>
+        <select id="s-enabled" name="enabled">
+          <option value="1"{{ " selected" if schedule.enabled }}>开启</option>
+          <option value="0"{{ " selected" if not schedule.enabled }}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label for="s-hour">执行时间</label>
+        <select id="s-hour" name="hour">
+          {% for h in range(24) %}<option value="{{ h }}"{{ " selected" if schedule.hour == h }}>每天 {{ "%02d"|format(h) }}:00</option>{% endfor %}
+        </select>
+        <p class="help">北京时间。建议避开 02:00 前后。</p>
+      </div>
+      <div>
+        <label for="s-range">同步范围</label>
+        <select id="s-range" name="range_days">
+          {% for d in (1, 2, 3, 7, 14, 31) %}<option value="{{ d }}"{{ " selected" if schedule.range_days == d }}>前 {{ d }} 天</option>{% endfor %}
+        </select>
+        <p class="help">到昨天为止。选多于 1 天可以把前几天晚到的数据补齐。</p>
+      </div>
+    </div>
+    <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>
+  </form>
+</section>
+{% endblock %}

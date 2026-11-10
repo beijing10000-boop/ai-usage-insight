@@ -1,0 +1,106 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import range_bar, paging %}
+{% set title = "用量明细" %}
+{% set section = "洞察" %}
+{% set all = dict(rng.query, tab=tab if tab != "logs" else "", **keep) %}
+
+{% block actions %}
+<a class="btn" href="{{ url_with('/data/export.xlsx', **all) }}">{{ icon("download") }}导出 Excel</a>
+{% endblock %}
+
+{% block content %}
+{{ range_bar(rng, "/data", dict(keep, tab=tab if tab != "logs" else "")) }}
+
+<div class="page-intro">
+  <div class="segmented" role="group" aria-label="数据集">
+    <a class="{{ 'active' if tab == 'logs' }}" href="{{ url_with('/data', **dict(rng.query, **keep)) }}">用量日志</a>
+    <a class="{{ 'active' if tab == 'details' }}" href="{{ url_with('/data', tab='details', subject=keep.subject, member=keep.member, **rng.query) }}">统计详情</a>
+  </div>
+  <p>{% if tab == "logs" %}每一次使用一条记录，准实时。{% else %}飞书按天汇总的各类额度用量，第二天才有（T+1）。{% endif %}</p>
+</div>
+
+<section class="panel">
+  <form class="toolbar" method="get" action="/data">
+    {% for k, v in rng.query.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}" />{% endfor %}
+    {% if tab == "details" %}<input type="hidden" name="tab" value="details" />{% endif %}
+    {% if keep.member %}<input type="hidden" name="member" value="{{ keep.member }}" />{% endif %}
+    {% if keep.dept %}<input type="hidden" name="dept" value="{{ keep.dept }}" />{% endif %}
+    <select name="subject" aria-label="对象类型">
+      <option value="">人员和应用</option>
+      <option value="member"{{ " selected" if opts.subject == "member" }}>只看人员</option>
+      <option value="app"{{ " selected" if opts.subject == "app" }}>只看应用</option>
+    </select>
+    {% if tab == "logs" %}
+    <select name="feature" aria-label="额度类型">
+      <option value="">全部额度类型</option>
+      {% for key, name in features.items() %}<option value="{{ key }}"{{ " selected" if opts.feature_key == key }}>{{ name }}</option>{% endfor %}
+    </select>
+    <select name="usage" aria-label="用量类型">
+      <option value="">付费和免费</option>
+      {% for key, name in usage_types.items() %}<option value="{{ key }}"{{ " selected" if opts.usage_type == key }}>{{ name }}</option>{% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ opts.query }}" placeholder="搜索场景、姓名或应用名" aria-label="搜索" />
+    {% endif %}
+    <button type="submit" class="btn">筛选</button>
+  </form>
+
+  {% if member_name or dept_name %}
+  <p class="notice">
+    只看 <b>{{ member_name or dept_name }}</b>{{ "（含下级部门）" if dept_name }}的记录。
+    <a href="{{ url_with('/data', tab=tab if tab != 'logs' else '', subject=keep.subject, q=keep.q, **rng.query) }}">看全部</a>
+  </p>
+  {% endif %}
+
+  {% if tab == "logs" %}
+  <p class="small muted">共 {{ pager.total|num }} 条记录，合计 {{ amount|num }} 点。</p>
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>对象</th><th>场景</th><th>额度类型</th><th>用量类型</th><th class="num">消耗（点）</th><th class="num">折算</th><th>备注</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="nowrap">{{ r.date }}<small>{{ r.ts|clock }}</small></td>
+          <td>
+            {% if r.subject == "member" %}<a class="cell-title" href="{{ url_with('/data', member=r.entity_id, **rng.query) }}">{{ r.name }}</a><small>{{ r.dept }}</small>
+            {% else %}<span class="cell-title">{{ r.name }}</span><small>{{ r.entity_type }}</small>{% endif %}
+          </td>
+          <td>{{ r.scenario }}</td>
+          <td>{{ r.feature }}</td>
+          <td>{{ r.usage_type }}</td>
+          <td class="num">{{ r.amount|num }}</td>
+          <td class="num">{{ r.cost|money }}</td>
+          <td>{% for n in r.notes %}<span class="tag" title="{{ n.key_name }}">{{ n.value }}</span> {% endfor %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">这个范围和筛选条件下没有用量记录。换一个时间范围，或者先确认这些日期已经同步。</p>
+  {% endif %}
+  {% else %}
+  <p class="small muted">共 {{ pager.total|num }} 条记录。</p>
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>日期</th><th>对象</th>{% for name in features.values() %}<th class="num">{{ name }}</th>{% endfor %}<th class="num">合计</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="nowrap">{{ r.date }}</td>
+          <td><span class="cell-title">{{ r.name }}</span><small>{{ r.entity_type }}</small></td>
+          {% for v in r.quotas %}<td class="num">{{ v|num if v else "—" }}</td>{% endfor %}
+          <td class="num"><strong>{{ r.total|num }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">这个范围内没有统计详情。统计详情是 T+1 的，当天的要到第二天同步后才有。</p>
+  {% endif %}
+  {% endif %}
+  {{ paging(pager, "/data", all) }}
+</section>
+{% endblock %}

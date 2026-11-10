@@ -1,0 +1,123 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import range_bar, stat, delta, change_stat, bar, chart, shares %}
+{% set title = "部门运营" %}
+{% set section = "洞察" %}
+{% set heading = dept.name if dept else "部门运营" %}
+
+{% block content %}
+{% if not dept %}
+<section class="panel empty-state">
+  <h2>还没有部门数据</h2>
+  <p>通讯录还没有同步下来，所以没有部门可以选。请运营管理员在「同步管理」里同步通讯录。</p>
+</section>
+{% else %}
+{% set k = o.kpis %}
+{{ range_bar(rng, "/dept-ops", {"dept": dept.id}) }}
+
+<div class="page-intro">
+  <nav class="trail" aria-label="部门路径">
+    {% for id, name, ok in trail %}
+    {% if not loop.first %}<span aria-hidden="true">›</span>{% endif %}
+    {% if loop.last %}<strong>{{ name }}</strong>{% elif ok %}<a href="{{ url_with('/dept-ops', dept=id, **rng.query) }}">{{ name }}</a>{% else %}<span>{{ name }}</span>{% endif %}
+    {% endfor %}
+    <span class="muted">· {{ headcount }} 人{% if leader %} · 负责人 {{ leader }}{% endif %}</span>
+  </nav>
+  {% if options|length > 1 %}
+  <div class="segmented" role="group" aria-label="切换部门">
+    {% for d in options %}<a class="{{ 'active' if d.id == dept.id }}" href="{{ url_with('/dept-ops', dept=d.id, **rng.query) }}">{{ d.name }}</a>{% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<p class="notice narrative"><b>本期解读</b>　{{ o.narrative }}</p>
+
+<div class="stats">
+  {{ stat("部门用量（点）", k.total|compact, "折算 " ~ k.cost|money ~ "，含下级部门", full=k.total) }}
+  {{ change_stat(k) }}
+  {{ stat("活跃人数", k.active_members ~ " / " ~ headcount, "用过 AI 的人 / 部门人数") }}
+  {{ stat("人均用量（点）", k.per_capita|compact, "按活跃人数平均", full=k.per_capita) }}
+  {{ stat("日均用量（点）", k.daily_avg|compact, "按 " ~ k.days ~ " 天平均", full=k.daily_avg) }}
+  {{ stat("前 10 人占比", k.top10_share|num(1) ~ "%", "用量最高的 10 个人") }}
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head"><div><h2>用量趋势</h2><p>部门成员每天消耗的点数</p></div></div>
+    {{ chart(usage, "部门每天的 AI 用量", "这段时间部门里还没有人用 AI。") }}
+  </section>
+  <section class="panel">
+    <div class="section-head"><div><h2>活跃人数</h2><p>每天有多少成员用了 AI</p></div></div>
+    {{ chart(people, "部门每天的活跃人数", "这段时间部门里还没有人用 AI。") }}
+  </section>
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head"><div><h2>下级部门</h2><p>每个下级部门的用量都包含它自己的下级；「直属成员」是直接挂在本部门下的人</p></div></div>
+    {% if o.depts %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>部门</th><th class="num">用量（点）</th><th>占比</th><th class="num">活跃 / 人数</th><th class="num">人均</th><th class="num">环比</th></tr></thead>
+        <tbody>
+          {% for d in o.depts %}
+          <tr>
+            <td>{% if d.drill %}<a class="cell-title" href="{{ url_with('/dept-ops', dept=d.id, **rng.query) }}">{{ d.name }}</a>{% else %}<span class="cell-title">{{ d.name }}</span>{% endif %}</td>
+            <td class="num">{{ d.amount|num }}</td>
+            <td>{{ bar(d.share) }}<small>{{ d.share|num(1) }}%</small></td>
+            <td class="num">{{ d.users }}{% if d.headcount %} / {{ d.headcount }}{% endif %}</td>
+            <td class="num">{{ d.per_capita|num(1) }}</td>
+            <td class="num">{{ delta(d.change) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">这段时间部门里没有用量。</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="section-head"><div><h2>场景分布</h2><p>部门成员把 AI 用在哪些产品和场景上</p></div></div>
+    {{ shares(o.scenarios, "这段时间没有场景数据。", extra="users") }}
+    {% if o.scenario_paths %}
+    <details class="chart-data">
+      <summary>展开到具体场景</summary>
+      {{ shares(o.scenario_paths, "", extra="users") }}
+    </details>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel">
+  <div class="section-head">
+    <div><h2>成员用量</h2><p>部门（含下级）里这段时间用过 AI 的 {{ members|length }} 个人</p></div>
+  </div>
+  {% if members %}
+  <div class="toolbar"><input type="search" data-filter-input="member-table" placeholder="按姓名、部门或场景筛选" aria-label="筛选成员" /></div>
+  <div class="table-wrap">
+    <table id="member-table">
+      <thead><tr><th>姓名</th><th class="num">用量（点）</th><th>占比</th><th class="num">次数</th><th class="num">活跃天数</th><th>最近使用</th><th>主要场景</th><th class="num">环比</th></tr></thead>
+      <tbody>
+        {% for m in members %}
+        <tr>
+          <td><a class="cell-title" href="{{ url_with('/self-usage', member=m.id, **rng.query) }}">{{ m.name }}</a><small>{{ m.dept }}</small></td>
+          <td class="num">{{ m.amount|num }}</td>
+          <td>{{ bar(m.share) }}<small>{{ m.share|num(1) }}%</small></td>
+          <td class="num">{{ m.records|num }}</td>
+          <td class="num">{{ m.active_days }}</td>
+          <td class="nowrap">{{ m.last_used }}</td>
+          <td>{{ m.main }}</td>
+          <td class="num">{{ delta(m.change) }}</td>
+        </tr>
+        {% endfor %}
+        <tr data-empty hidden><td colspan="8" class="empty">没有符合筛选条件的成员。</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">这段时间部门里还没有人用 AI。</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

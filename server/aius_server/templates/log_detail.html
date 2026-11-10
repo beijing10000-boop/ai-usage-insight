@@ -1,0 +1,50 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import run_status %}
+{% set title = "同步任务 #" ~ run.id %}
+{% set section = "执行日志" %}
+{% set crumb_href = "/logs" %}
+
+{% block content %}
+<div class="stats">
+  <div class="stat"><div class="label">状态</div><div class="value small-value">{{ run_status(run) }}</div><div class="hint">{{ run.actor_name }} · {{ "定时" if run.trigger == "schedule" else "手动" }}{% if run.resume_count %} · 续跑 {{ run.resume_count }} 次{% endif %}</div></div>
+  <div class="stat"><div class="label">数据日期</div><div class="value small-value">{{ run.start_date }}{% if run.end_date != run.start_date %} ~ {{ run.end_date }}{% endif %}</div><div class="hint">完成 {{ run.done }} / {{ run.stats.units }} 个数据集</div></div>
+  <div class="stat"><div class="label">写入（条）</div><div class="value small-value">{{ run.total_rows|num }}</div><div class="hint">{{ run.stats.pages }} 次接口分页</div></div>
+  <div class="stat"><div class="label">用时</div><div class="value small-value">{{ run.seconds|duration }}</div><div class="hint">{{ run.started_at|ts("还没开始") }} 开始</div></div>
+  <div class="stat{{ ' attention' if run.stats.failed }}"><div class="label">失败的数据集</div><div class="value small-value">{{ run.stats.failed }}</div><div class="hint">{{ "对同一段日期重新同步即可" if run.stats.failed else "没有失败" }}</div></div>
+</div>
+
+{% if run.error %}<p class="error" role="alert">{{ run.error }}</p>{% endif %}
+
+<section class="panel">
+  <div class="section-head"><div><h2>各维度写入量</h2><p>这段日期里现在的数据</p></div></div>
+  <div class="row-item"><div><strong>人员</strong><p>人员用量日志 {{ run.stats.log_member|num }} 条 · 统计详情 {{ run.stats.detail_member|num }} 条</p></div><div class="row-meta"><strong>{{ run.stats.members }}</strong> 人</div></div>
+  <div class="row-item"><div><strong>部门</strong><p>按人员日志上的部门统计，页面上再按部门树向上汇总</p></div><div class="row-meta"><strong>{{ run.stats.depts }}</strong> 个</div></div>
+  <div class="row-item"><div><strong>应用</strong><p>应用用量日志 {{ run.stats.log_app|num }} 条 · 统计详情 {{ run.stats.detail_app|num }} 条</p></div><div class="row-meta"><strong>{{ run.stats.apps }}</strong> 个</div></div>
+</section>
+
+<section class="panel">
+  <div class="section-head"><div><h2>执行步骤</h2><p>每个「日期 × 数据集」一行：调了几页接口、写入多少条、出了什么错</p></div></div>
+  {% if run.steps %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>数据日期</th><th>数据集</th><th class="num">分页数</th><th class="num">写入（条）</th><th>结果</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for s in run.steps %}
+        <tr>
+          <td class="nowrap">{{ s.at|ts }}</td>
+          <td class="nowrap">{{ s.usage_date }}</td>
+          <td>{{ s.dataset_label }}</td>
+          <td class="num">{{ s.pages or "—" }}</td>
+          <td class="num">{{ s.rows|num if s.dataset != "names" else "—" }}</td>
+          <td><span class="status {{ 'ok' if s.status == 'ok' else 'failed' }}">{{ "完成" if s.status == "ok" else "失败" }}</span></td>
+          <td>{{ s.message }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">{{ "任务还没开始执行。" if run.status == "queued" else "这个任务没有执行记录。" }}</p>
+  {% endif %}
+</section>
+{% endblock %}

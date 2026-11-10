@@ -1,0 +1,233 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import range_bar, stat, delta, change_stat, bar, chart, shares, trail, suggest_input %}
+{% set title = "运营驾驶舱" %}
+{% set section = "洞察" %}
+{% set k = o.kpis %}
+{% set keep = {"dept": parent} if crumbs else {} %}
+
+{% block actions %}
+<a class="btn" href="{{ url_with('/dashboard/export.xlsx', **dict(rng.query, **keep)) }}">{{ icon("download") }}导出 Excel</a>
+{% endblock %}
+
+{% block content %}
+{{ range_bar(rng, "/dashboard", keep) }}
+{{ trail(crumbs, "/dashboard", rng.query) }}
+
+<p class="notice narrative"><b>本期解读</b>　{{ o.narrative }}</p>
+
+<div class="stats">
+  {{ stat("总用量（点）", k.total|compact, "折算 " ~ k.cost|money ~ "（" ~ k.point_price|num(4) ~ " 元/点）", full=k.total) }}
+  {{ change_stat(k) }}
+  {{ stat(k.end ~ " 当日用量", k.last_day|compact, k.last_day_users ~ " 人使用", full=k.last_day) }}
+  {{ stat("活跃人数", k.active_members|num, ("占在职 " ~ k.coverage|num(1) ~ "%") if k.coverage is not none and not crumbs else "这段时间用过 AI 的人") }}
+  {{ stat("活跃部门 / 应用", k.active_depts ~ " / " ~ k.active_apps, "有用量的部门数 / 应用数") }}
+  {{ stat("日均用量（点）", k.daily_avg|compact, "按 " ~ k.days ~ " 天平均", full=k.daily_avg) }}
+  {{ stat("人均用量（点）", k.per_capita|compact, "按活跃人数平均", full=k.per_capita) }}
+  {{ stat("前 10 人占比", k.top10_share|num(1) ~ "%", "用量最高的 10 个人") }}
+</div>
+
+<section class="panel">
+  <div class="section-head">
+    <div><h2>用量趋势</h2><p>每天消耗的点数{{ "（人员 + 应用）" if not crumbs }}</p></div>
+  </div>
+  {{ chart(usage, "每天的 AI 用量，合计 " ~ k.total|num ~ " 点", "这段时间还没有用量数据。先到「同步管理」同步一次。", tall=true) }}
+</section>
+
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head"><div><h2>活跃人数</h2><p>每天有多少人用了 AI</p></div></div>
+    {{ chart(people, "每天的活跃人数", "这段时间还没有人员用量。") }}
+  </section>
+
+  <section class="panel" id="anomalies">
+    <div class="section-head"><div><h2>异常提醒</h2><p>单日突增、环比增长超过 50%、一个人占比超过 25%、单次用量偏高</p></div></div>
+    {% for a in o.anomalies %}
+    <div class="row-item">
+      <div><strong>{{ a.title }}</strong> <span class="tag {{ 'warn' if a.level == 'high' else 'info' }}">{{ a.dimension }}</span><p>{{ a.text }}</p></div>
+      <a class="btn small" href="{{ a.link }}">查看</a>
+    </div>
+    {% else %}
+    <p class="empty">{{ "这段时间没有发现明显的异常。" if k.total else "还没有用量数据。" }}</p>
+    {% endfor %}
+  </section>
+</div>
+
+<div class="grid2">
+  <section class="panel" id="depts">
+    <div class="section-head">
+      <div><h2>{{ "下级部门" if crumbs else "一级部门汇总" }}</h2><p>每个部门的用量都包含它的下级部门；点部门名继续往下看</p></div>
+    </div>
+    {% if o.depts %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>部门</th><th class="num">用量（点）</th><th>占比</th><th class="num">活跃 / 人数</th><th class="num">人均</th><th class="num">环比</th></tr></thead>
+        <tbody>
+          {% for d in o.depts %}
+          <tr>
+            <td>{% if d.drill %}<a class="cell-title" href="{{ url_with('/dashboard', dept=d.id, **rng.query) }}">{{ d.name }}</a>{% else %}<span class="cell-title">{{ d.name }}</span>{% endif %}</td>
+            <td class="num">{{ d.amount|num }}</td>
+            <td>{{ bar(d.share) }}<small>{{ d.share|num(1) }}%</small></td>
+            <td class="num">{{ d.users }}{% if d.headcount %} / {{ d.headcount }}{% endif %}</td>
+            <td class="num">{{ d.per_capita|num(1) }}</td>
+            <td class="num">{{ delta(d.change) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">这段时间没有部门用量。</p>
+    {% endif %}
+  </section>
+
+  <section class="panel" id="members">
+    <div class="section-head">
+      <div><h2>人员排行</h2><p>用量最高的 20 个人</p></div>
+      <a class="btn small" href="{{ url_with('/data', subject='member', **dict(rng.query, **keep)) }}">看明细</a>
+    </div>
+    {% if o.members %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>姓名</th><th class="num">用量（点）</th><th>占比</th><th class="num">次数</th><th class="num">环比</th></tr></thead>
+        <tbody>
+          {% for m in o.members %}
+          <tr>
+            <td><a class="cell-title" href="{{ url_with('/self-usage', member=m.id, **rng.query) }}">{{ m.name }}</a><small>{{ m.dept_path }}</small></td>
+            <td class="num">{{ m.amount|num }}</td>
+            <td>{{ bar(m.share) }}<small>{{ m.share|num(1) }}%</small></td>
+            <td class="num">{{ m.records|num }}</td>
+            <td class="num">{{ delta(m.change) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">这段时间没有人员用量。</p>
+    {% endif %}
+  </section>
+</div>
+
+<div class="grid2">
+  <section class="panel" id="apps">
+    <div class="section-head">
+      <div><h2>应用排行</h2><p>自建应用、Aily 应用和智能体等消耗的点数</p></div>
+      <a class="btn small" href="/config#apps">应用映射</a>
+    </div>
+    {% if crumbs %}
+    <p class="empty">应用不属于某个部门，回到「全部部门」可以看应用排行。</p>
+    {% elif o.apps %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>应用</th><th class="num">用量（点）</th><th>占比</th><th class="num">环比</th></tr></thead>
+        <tbody>
+          {% for a in o.apps %}
+          <tr>
+            <td><span class="cell-title">{{ a.name }}</span><small>{{ a.type }}{% if not a.named %} · 还没有名称，显示的是应用 ID{% endif %}</small></td>
+            <td class="num">{{ a.amount|num }}</td>
+            <td>{{ bar(a.share) }}<small>{{ a.share|num(1) }}%</small></td>
+            <td class="num">{{ delta(a.change) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">这段时间没有应用用量。</p>
+    {% endif %}
+  </section>
+
+  <section class="panel" id="scenarios">
+    <div class="section-head"><div><h2>场景分布</h2><p>用在哪些产品和场景上</p></div></div>
+    {{ shares(o.scenarios, "这段时间没有场景数据。", extra="users") }}
+    {% if o.scenario_paths %}
+    <details class="chart-data">
+      <summary>展开到具体场景</summary>
+      {{ shares(o.scenario_paths, "", extra="users") }}
+    </details>
+    {% endif %}
+  </section>
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head"><div><h2>额度类型</h2><p>消耗的是哪一类 AI 额度，付费还是试用</p></div></div>
+    {{ shares(o.features, "这段时间没有用量数据。", extra="records") }}
+    {% if o.usage_types %}
+    <h3>付费与免费</h3>
+    {{ shares(o.usage_types, "", extra="records") }}
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="section-head"><div><h2>使用时段</h2><p>一天 24 小时里各个小时的用量（北京时间，整个时间范围累计）</p></div></div>
+    {{ chart(hours, "各小时的用量", "这段时间没有带时间的用量记录。", when="时段") }}
+  </section>
+</div>
+
+<section class="panel" id="rollup">
+  <div class="section-head">
+    <div><h2>部门圈选</h2><p>把几个部门合在一起看（各自含下级部门）；选择会保存，下次打开还在</p></div>
+    {% if picked %}
+    <form method="post" action="/dashboard/rollup" class="inline">
+      <input type="hidden" name="action" value="clear" /><input type="hidden" name="next" value="{{ url_with('/dashboard', **rng.query) }}" />
+      <button type="submit" class="btn small">清空</button>
+    </form>
+    {% endif %}
+  </div>
+  <form method="post" action="/dashboard/rollup" class="add-row">
+    <input type="hidden" name="action" value="add" /><input type="hidden" name="next" value="{{ url_with('/dashboard', **rng.query) }}" />
+    <label class="offscreen-label" for="rollup-dept">要加入圈选的部门</label>
+    {{ suggest_input("rollup-dept", "dept", "dept", "输入部门名称，从列表里选") }}
+    <button type="submit" class="btn">加入圈选</button>
+  </form>
+  {% if rollup %}
+  <div class="stats compact">
+    {{ stat("圈选合计（点）", rollup.total|compact, "折算 " ~ rollup.cost|money, full=rollup.total) }}
+    {{ stat("占人员总用量", rollup.share_of_all|num(1) ~ "%", "全部部门的人员用量为 100%") }}
+    {{ stat("活跃人数", rollup.users|num, "同一个人只算一次") }}
+    {{ stat("人均用量（点）", rollup.per_capita|compact, "按活跃人数平均") }}
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>部门</th><th class="num">用量（点）</th><th>在圈选里的占比</th><th class="num">活跃人数</th><th class="num">人均</th><th></th></tr></thead>
+      <tbody>
+        {% for d in rollup.rows %}
+        <tr>
+          <td><span class="cell-title">{{ d.name }}</span><small>{{ d.path }}</small></td>
+          <td class="num">{{ d.amount|num }}</td>
+          <td>{{ bar(d.share) }}<small>{{ d.share|num(1) }}%</small></td>
+          <td class="num">{{ d.users }}</td>
+          <td class="num">{{ d.per_capita|num(1) }}</td>
+          <td>
+            <form method="post" action="/dashboard/rollup" class="inline">
+              <input type="hidden" name="action" value="remove" /><input type="hidden" name="dept" value="{{ d.id }}" />
+              <input type="hidden" name="next" value="{{ url_with('/dashboard', **rng.query) }}" />
+              <button type="submit" class="btn small">移出</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有圈选部门。比如把分散在不同中心的几个研发部门加进来，看它们合计用了多少。</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-head">
+    <div><h2>额度使用</h2><p>当前周期里使用率最高的 5 条额度分配{% if quota_summary.count %}；共 {{ quota_summary.count }} 条生效，{{ quota_summary.over }} 条已超额{% endif %}</p></div>
+    <a class="btn small" href="/quota">额度分配</a>
+  </div>
+  {% for q in quotas %}
+  <div class="row-item">
+    <div><strong>{{ q.name }}</strong> <span class="tag">{{ q.dimension_label }}</span><p>{{ q.period_start }} ~ {{ q.period_end }} · 已用 {{ q.used|num }} / {{ q.amount|num }} 点</p></div>
+    <div class="row-meta"><span class="status {{ q.state }}">{{ q.rate|num(1) }}% · {{ q.state_label }}</span></div>
+  </div>
+  {% else %}
+  <p class="empty">当前周期没有生效的额度分配。在「额度分配」里给部门、人员或应用分配点数后，这里会显示使用率。</p>
+  {% endfor %}
+</section>
+{% endblock %}

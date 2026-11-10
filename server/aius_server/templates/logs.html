@@ -1,0 +1,45 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import run_status, paging %}
+{% set title = "执行日志" %}
+{% set section = "运营" %}
+
+{% block content %}
+<section class="panel">
+  <form class="toolbar" method="get" action="/logs">
+    <select name="status" aria-label="任务状态">
+      <option value="">全部状态</option>
+      {% for key, name in statuses.items() %}<option value="{{ key }}"{{ " selected" if keep.status == key }}>{{ name }}</option>{% endfor %}
+    </select>
+    <label class="inline-field">数据日期从 <input type="date" name="start" value="{{ keep.start }}" aria-label="开始日期" /></label>
+    <label class="inline-field">到 <input type="date" name="end" value="{{ keep.end }}" aria-label="结束日期" /></label>
+    <button type="submit" class="btn">查询</button>
+    {% if keep.status or keep.start or keep.end %}<a class="btn subtle" href="/logs">重置</a>{% endif %}
+  </form>
+
+  {% if runs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>任务</th><th>数据日期</th><th>状态</th><th>触发</th><th>开始时间</th><th class="num">用时</th><th class="num">写入（条）</th><th class="num">失败</th><th></th></tr></thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td class="nowrap">#{{ r.id }}</td>
+          <td class="nowrap">{{ r.start_date }}{% if r.end_date != r.start_date %} ~ {{ r.end_date }}{% endif %}</td>
+          <td>{{ run_status(r) }}{% if r.resume_count %}<small>续跑 {{ r.resume_count }} 次</small>{% endif %}</td>
+          <td>{{ r.actor_name }}<small>{{ "定时" if r.trigger == "schedule" else "手动" }}</small></td>
+          <td class="nowrap" title="{{ r.started_at|ts }}">{{ r.started_at|ts("还没开始") }}</td>
+          <td class="num">{{ r.seconds|duration }}</td>
+          <td class="num">{{ r.total_rows|num }}</td>
+          <td class="num">{{ r.stats.failed or "—" }}</td>
+          <td><a class="btn small" href="/logs/{{ r.id }}">详情</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ paging(pager, "/logs", keep) }}
+  {% else %}
+  <p class="empty">{{ "没有符合条件的同步任务。" if keep.status or keep.start or keep.end else "还没有同步过。到「同步管理」发起第一次同步。" }}</p>
+  {% endif %}
+</section>
+{% endblock %}

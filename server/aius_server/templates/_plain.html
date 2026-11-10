@@ -1,0 +1,25 @@
+{# 不带侧栏的独立页面：登录、请求被拒绝时的提示。 #}
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{{ title }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ version }}" />
+    <link rel="stylesheet" href="/static/ui-kit.css?v={{ version }}" />
+    <link rel="stylesheet" href="/static/app.css?v={{ version }}" />
+    <script src="/static/ui-kit.js?v={{ version }}"></script>
+    <script defer src="/static/app.js?v={{ version }}"></script>
+  </head>
+  <body>
+    <main class="login-wrap">
+      <section class="login-card">
+        <div class="logo">{{ icon("logo") }}</div>
+        <div class="eyebrow">{% block eyebrow %}{{ user_name or site }}{% endblock %}</div>
+        <h1>{% block heading %}{{ title }}{% endblock %}</h1>
+        {% block body %}{% endblock %}
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,72 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import range_bar, stat, delta, change_stat, shares %}
+{% set title = "AI 门户" %}
+{% set section = "洞察" %}
+
+{% block content %}
+{{ range_bar(rng, "/") }}
+
+<section class="hero portal">
+  <div class="eyebrow">AI 用量洞察</div>
+  <h2>{{ shell.viewer.label }}，想了解什么？</h2>
+  <p>直接用一句话提问，助手会按<b>{{ scope }}</b>在 {{ rng.label }}的用量数据来回答。{% if not llm %}现在还没有配置 AI 模型，提问会得到按数据整理的摘要。{% endif %}</p>
+  <form id="ask-form" class="ask" data-url="{{ url_with('/insight/ask', **rng.query) }}">
+    <label class="offscreen-label" for="ask-input">你的问题</label>
+    <input id="ask-input" name="question" maxlength="{{ max_question }}" autocomplete="off" required placeholder="例如：哪些部门的用量增长最快？" />
+    <button type="submit" class="btn primary" id="ask-submit">提问</button>
+  </form>
+  <div class="chips" aria-label="常见问题">
+    {% for s in suggestions %}<button type="button" class="category-chip" data-ask="{{ s }}">{{ s }}</button>{% endfor %}
+  </div>
+</section>
+
+<section class="panel" id="answer-panel" hidden aria-live="polite">
+  <div class="section-head">
+    <div><h2 id="answer-question"></h2><p id="answer-meta"></p></div>
+  </div>
+  <div id="answer" class="answer"></div>
+</section>
+
+<div class="stats">
+  {{ stat("总用量（点）", k.total|compact, "折算 " ~ k.cost|money, full=k.total) }}
+  {% if personal %}
+  {{ stat("使用次数", k.records|compact, k.days ~ " 天内", full=k.records) }}
+  {{ stat("日均用量（点）", k.daily_avg|compact, "按 " ~ k.days ~ " 天平均") }}
+  {% else %}
+  {{ stat("活跃人数", k.active_members|num, ("占在职 " ~ k.coverage|num(1) ~ "%") if k.coverage is not none else "这段时间用过 AI 的人") }}
+  {{ stat("人均用量（点）", k.per_capita|compact, "按活跃人数平均") }}
+  {% endif %}
+  {{ change_stat(k) }}
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head">
+      <div><h2>{{ "我用在哪里" if personal else "用量最高的场景" }}</h2><p>{{ rng.label }}，按一级场景</p></div>
+      <a class="btn small" href="{{ url_with('/self-usage' if personal else '/dashboard', **rng.query) }}{{ '' if personal else '#scenarios' }}">查看使用分布</a>
+    </div>
+    {{ shares(scenarios, "这段时间还没有用量数据。") }}
+  </section>
+
+  <section class="panel">
+    {% if personal %}
+    <div class="section-head"><div><h2>接下来可以看</h2><p>你的数据都在这几个页面</p></div></div>
+    <div class="row-item"><div><a class="cell-title" href="{{ url_with('/self-usage', **rng.query) }}">我的用量</a><p>每天用了多少、用在哪些场景、每一次使用的明细</p></div></div>
+    <div class="row-item"><div><a class="cell-title" href="/connect">接入管理</a><p>把平台接入 Claude、Cursor 等 AI 工具，直接在对话里查自己的用量</p></div></div>
+    {% else %}
+    <div class="section-head">
+      <div><h2>异常线索</h2><p>突增、快速增长、用量集中</p></div>
+      {% if shell.viewer.is_admin %}<a class="btn small" href="{{ url_with('/dashboard', **rng.query) }}#anomalies">查看异常线索</a>{% endif %}
+    </div>
+    {% for a in anomalies %}
+    <div class="row-item">
+      <div><strong>{{ a.title }}</strong> <span class="tag {{ 'warn' if a.level == 'high' else 'info' }}">{{ a.dimension }}</span><p>{{ a.text }}</p></div>
+      {% if shell.viewer.is_admin %}<a class="btn small" href="{{ a.link }}">查看</a>{% endif %}
+    </div>
+    {% else %}
+    <p class="empty">{{ "这段时间没有发现明显的异常。" if k.total else "还没有用量数据。同步之后这里会列出需要关注的异常。" }}</p>
+    {% endfor %}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,112 @@
+{# 各页面共用的小组件。 #}
+
+{# 日期范围：一排筛选放在所有图表上面，先是预设（近 7 / 30 / 90 天），再是自定义起止日期。keep 是要带着走的其它参数。 #}
+{% macro range_bar(rng, path, keep={}, presets=(7, 30, 90)) %}
+{% if rng.error %}<p class="notice warn" role="alert">{{ rng.error }}</p>{% endif %}
+<form class="range-bar" method="get" action="{{ path }}">
+  <div class="segmented" role="group" aria-label="时间范围">
+    {% for d in presets %}
+    <a class="{{ 'active' if rng.preset == d }}" href="{{ url_with(path, days=d, **keep) }}"{% if rng.preset == d %} aria-current="true"{% endif %}>近 {{ d }} 天</a>
+    {% endfor %}
+  </div>
+  {% for k, v in keep.items() %}{% if v not in (none, "") %}<input type="hidden" name="{{ k }}" value="{{ v }}" />{% endif %}{% endfor %}
+  <label class="inline-field">从 <input type="date" name="start" value="{{ rng.start }}" required aria-label="开始日期" /></label>
+  <label class="inline-field">到 <input type="date" name="end" value="{{ rng.end }}" required aria-label="结束日期" /></label>
+  <button type="submit" class="btn">查看</button>
+  <span class="range-note">{{ rng.start }} ~ {{ rng.end }}，共 {{ rng.days }} 天</span>
+</form>
+{% endmacro %}
+
+{# 指标卡：标题、数值、一行说明。数值很大时写成「12.9 万」，完整数字在 title 里 #}
+{% macro stat(label, value, hint="", href="", full=none) %}
+{% if href %}<a class="stat" href="{{ href }}">{% else %}<div class="stat">{% endif %}
+  <div class="label">{{ label }}</div>
+  <div class="value"{% if full is not none %} title="{{ full|num }}"{% endif %}>{{ value }}</div>
+  <div class="hint">{{ hint }}</div>
+{% if href %}</a>{% else %}</div>{% endif %}
+{% endmacro %}
+
+{# 环比：用量涨跌本身没有好坏，所以不上红绿色，只用箭头和正负号 #}
+{% macro delta(value) %}
+{% if value is none %}<span class="muted" title="上一个周期没有可以比较的数据">—</span>{% else %}<span class="delta">{{ "▲" if value > 0 else ("▼" if value < 0 else "") }} {{ value|delta }}</span>{% endif %}
+{% endmacro %}
+
+{# 「比上一个周期」这张指标卡。x 是带 change / prev_total / comparable 的指标对象 #}
+{% macro change_stat(x) %}
+<div class="stat">
+  <div class="label">比上一个周期</div>
+  <div class="value small-value">{{ delta(x.change) }}</div>
+  <div class="hint">{% if x.comparable %}上一个周期 {{ x.prev_total|num }} 点{% else %}上一个周期的数据没有同步完整，不做比较{% endif %}</div>
+</div>
+{% endmacro %}
+
+{# 占比条：单一颜色，长度就是占比 #}
+{% macro bar(share) %}<progress class="mini" max="100" value="{{ share }}" aria-hidden="true"></progress>{% endmacro %}
+
+{# 图表 + 同一份数据的表格（「看数字」）。data 是 pages.py 里拼好的 {kind, unit, points} #}
+{% macro chart(data, label, empty, tall=false, when="日期") %}
+{% if not data.points or data.points|sum(attribute="value") == 0 %}
+<p class="empty">{{ empty }}</p>
+{% else %}
+<div class="chart{{ ' tall' if tall }}" data-chart='{{ data|tojson }}' role="img" tabindex="0" aria-label="{{ label }}。按左右方向键逐个查看数值。"></div>
+<details class="chart-data">
+  <summary>看数字</summary>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>{{ when }}</th><th class="num">数值（{{ data.unit }}）</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for p in data.points %}<tr><td>{{ p.title }}</td><td class="num">{{ p.value|num }}</td><td>{{ p.lines|join(" · ") }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
+{% endmacro %}
+
+{# 分布：名称 + 占比条 + 数值，按用量从大到小 #}
+{% macro shares(items, empty, unit="点", extra="") %}
+{% for it in items %}
+<div class="share-row">
+  <div class="share-name" title="{{ it.name }}">{{ it.name }}</div>
+  {{ bar(it.share) }}
+  <div class="share-value"><strong>{{ it.amount|num }}</strong> {{ unit }}<small>{{ it.share|num(1) }}%{% if extra == "users" %} · {{ it.users }} 人{% elif extra == "records" %} · {{ it.records }} 次{% endif %}</small></div>
+</div>
+{% else %}
+<p class="empty">{{ empty }}</p>
+{% endfor %}
+{% endmacro %}
+
+{% macro paging(p, path, keep={}) %}
+{% if p.total > p.size %}
+<div class="pagination">
+  <span>第 {{ p.first }}–{{ p.last }} 条，共 {{ p.total|num }} 条</span>
+  <div class="actions">
+    {% if p.page > 1 %}<a class="btn small" href="{{ url_with(path, page=p.page - 1, **keep) }}">上一页</a>{% endif %}
+    <span>第 {{ p.page }} / {{ p.pages }} 页</span>
+    {% if p.page < p.pages %}<a class="btn small" href="{{ url_with(path, page=p.page + 1, **keep) }}">下一页</a>{% endif %}
+  </div>
+</div>
+{% endif %}
+{% endmacro %}
+
+{# 部门下钻的路径 #}
+{% macro trail(crumbs, path, keep={}, root="全部部门") %}
+{% if crumbs %}
+<nav class="trail" aria-label="部门路径">
+  <a href="{{ url_with(path, **keep) }}">{{ root }}</a>
+  {% for id, name in crumbs %}
+  <span aria-hidden="true">›</span>
+  {% if loop.last %}<strong>{{ name }}</strong>{% else %}<a href="{{ url_with(path, dept=id, **keep) }}">{{ name }}</a>{% endif %}
+  {% endfor %}
+</nav>
+{% endif %}
+{% endmacro %}
+
+{# 同步任务的状态 #}
+{% macro run_status(run) %}<span class="status {{ run.status }}">{{ run.status_label }}</span>{% endmacro %}
+
+{# 输入联想：kind = dept | user | app。选中的是 ID，显示的是名称 #}
+{% macro suggest_input(id, name, kind, placeholder, value="", required=true) %}
+<input id="{{ id }}" name="{{ name }}" list="{{ id }}-list" data-suggest="{{ kind }}" autocomplete="off" placeholder="{{ placeholder }}" value="{{ value }}"{{ " required" if required }} />
+<datalist id="{{ id }}-list"></datalist>
+{% endmacro %}

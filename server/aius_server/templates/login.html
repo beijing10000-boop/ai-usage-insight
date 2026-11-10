@@ -1,0 +1,12 @@
+{% extends "_plain.html" %}
+{# 登录页：样子和运维控制台的登录页一致——品牌、一句说明、「使用飞书账号登录」。 #}
+{% set title = "登录 · " ~ site %}
+{% block eyebrow %}飞书身份认证{% endblock %}
+{% block heading %}{{ site }}{% endblock %}
+{% block body %}
+<p class="muted">飞书 AI 用量：用了多少、谁在用、用在哪里、有没有异常</p>
+<a class="btn primary" href="{{ login_url }}">使用飞书账号登录</a>
+<p class="small">本企业的飞书账号都可以登录；每个人能看到的数据按角色区分</p>
+{% if notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+{% endblock %}

@@ -1,0 +1,94 @@
+{% extends "_base.html" %}
+{% set title = "接入管理" %}
+{% set section = "接入" %}
+{% set who = {"self": "所有人", "dept": "部门负责人 / 运营管理员", "admin": "运营管理员"} %}
+
+{% block content %}
+<div class="page-intro">
+  <p>用个人访问令牌，把平台接入 Claude Code、Cursor、Codex 等 AI 工具（远程 MCP），或者从脚本里调开放接口。令牌等同于你的身份：通过它能看到的数据和你在网页上能看到的一样（你现在是<b>{{ role_label }}</b>），所以不要发给别人，也不要提交到代码仓库。</p>
+</div>
+
+{% if secret %}
+<section class="panel">
+  <div class="section-head"><div><h2>新令牌已生成</h2><p>令牌只显示这一次，离开或刷新页面后就看不到了，请现在复制保存</p></div></div>
+  <label for="new-token">访问令牌</label>
+  <div class="add-row">
+    <input id="new-token" readonly value="{{ secret }}" class="mono" />
+    <button type="button" class="btn" data-copy-from="new-token">{{ icon("copy") }}复制令牌</button>
+  </div>
+  <h3>接入 AI 工具</h3>
+  <p class="muted">把下面这段话整段复制给你的 AI 工具，它会自己把连接配好。</p>
+  <pre id="prompt">{{ prompt }}</pre>
+  <div class="form-actions"><button type="button" class="btn primary" data-copy-from="prompt">{{ icon("copy") }}复制接入说明</button></div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="section-head"><div><h2>我的令牌</h2><p>最多 10 个。不用的及时撤销，撤销后立刻失效</p></div></div>
+  <form method="post" action="/connect" class="add-row">
+    <input type="hidden" name="action" value="create" />
+    <label class="offscreen-label" for="t-label">令牌用途</label>
+    <input id="t-label" name="label" maxlength="40" placeholder="用途，例如「我的 Claude Code」（可以不填）" />
+    <label class="offscreen-label" for="t-days">有效期</label>
+    <select id="t-days" name="days">
+      {% for d, name in token_days.items() %}<option value="{{ d }}"{{ " selected" if d == 90 }}>有效期 {{ name }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="btn primary">生成令牌</button>
+  </form>
+  {% if tokens %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>用途</th><th>生成时间</th><th>有效期至</th><th>最近使用</th><th></th></tr></thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr>
+          <td><span class="cell-title">{{ t.label }}</span></td>
+          <td class="nowrap">{{ t.created_at|ts }}</td>
+          <td class="nowrap">{% if t.expired %}<span class="tag warn">已过期</span>{% elif t.expires_at %}{{ t.expires_at|ts }}{% else %}不过期{% endif %}</td>
+          <td class="nowrap">{{ t.last_used_at|ago("还没用过") }}</td>
+          <td>
+            <form method="post" action="/connect" class="inline" data-confirm="撤销令牌「{{ t.label }}」？" data-confirm-message="撤销后，用这个令牌的 AI 工具和脚本会立刻连不上，需要重新生成令牌再配置。" data-confirm-text="撤销" data-danger>
+              <input type="hidden" name="action" value="revoke" /><input type="hidden" name="token" value="{{ t.token_hash }}" />
+              <button type="submit" class="btn small danger">撤销</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有令牌。生成一个之后，这里会给出接入 AI 工具的说明。</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-head"><div><h2>我的身份</h2><p>令牌绑定的就是这个身份。部署时要把某个人写进 AIUS_ADMINS（运营管理员），填的就是这里的 open_id</p></div></div>
+  <div class="row-item">
+    <div><strong>{{ shell.viewer.label }}</strong><p>{{ role_label }}</p></div>
+    <div class="actions"><code id="my-open-id">{{ shell.viewer.open_id }}</code><button type="button" class="btn small" data-copy-from="my-open-id">{{ icon("copy") }}复制</button></div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-head"><div><h2>远程 MCP</h2><p>AI 工具直接连平台，本机不用安装任何东西。一共 23 个只读工具（aius_*）</p></div></div>
+  <div class="row-item"><div><strong>地址</strong><p>Streamable HTTP 传输</p></div><div class="row-meta mono">{{ base }}/mcp</div></div>
+  <div class="row-item"><div><strong>认证</strong><p>请求头</p></div><div class="row-meta mono">Authorization: Bearer &lt;令牌&gt;</div></div>
+  <p class="help">生成令牌后会得到一段可以直接复制给 AI 工具的接入说明。接好之后可以直接问它「我上周用了多少点」「哪些部门增长最快」。</p>
+</section>
+
+<section class="panel">
+  <div class="section-head"><div><h2>开放接口</h2><p>全部是只读的 GET 接口，返回 JSON。时间范围用 <code>days</code>（默认 30）或 <code>start</code> + <code>end</code>（YYYY-MM-DD）</p></div></div>
+  <pre>curl -H "Authorization: Bearer &lt;令牌&gt;" "{{ base }}/openapi/v1/self-usage/summary?days=30"</pre>
+  <div class="table-wrap endpoints">
+    <table>
+      <thead><tr><th>接口</th><th>谁能用</th><th>返回什么</th></tr></thead>
+      <tbody>
+        {% for path, scope, text in endpoints %}
+        <tr><td class="mono">{{ path }}</td><td class="nowrap">{{ who[scope] }}</td><td>{{ text }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

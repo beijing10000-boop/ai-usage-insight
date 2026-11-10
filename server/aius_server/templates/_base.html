@@ -1,0 +1,73 @@
+{# 控制台外壳：侧栏 + 顶栏。布局和组件来自 ui-kit（与运维控制台共用），页面只填 content。 #}
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{{ title }} · {{ site }}</title>
+    {# ?v= 跟着版本号走，升级后浏览器不会沿用旧的脚本和样式 #}
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ version }}" />
+    <link rel="stylesheet" href="/static/ui-kit.css?v={{ version }}" />
+    <link rel="stylesheet" href="/static/app.css?v={{ version }}" />
+    <script src="/static/ui-kit.js?v={{ version }}"></script>
+    <script defer src="/static/app.js?v={{ version }}"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="/">
+          <span class="logo">{{ icon("logo") }}</span>
+          <span><strong>{{ site }}</strong><small>飞书 AI 用量 · 谁在用、用在哪</small></span>
+        </a>
+        <nav class="nav" aria-label="主导航">
+          {% for caption, links in shell.nav %}
+          <div class="nav-caption">{{ caption }}</div>
+          {% for key, href, label, ico in links %}
+          <a class="nav-link{{ ' active' if shell.active == key }}" href="{{ href }}"{% if shell.active == key %} aria-current="page"{% endif %}>
+            {% if ico.startswith("kit:") %}<span data-icon="{{ ico[4:] }}"></span>{% else %}<span>{{ icon(ico) }}</span>{% endif %}
+            <span>{{ label }}</span>
+          </a>
+          {% endfor %}
+          {% endfor %}
+        </nav>
+        <div class="sidebar-foot">
+          <div class="service-line">
+            <span class="indicator"></span>
+            <span>{% if shell.syncing %}正在同步数据…{% elif shell.latest %}数据截至 {{ shell.latest }}{% else %}还没有同步过数据{% endif %}</span>
+          </div>
+          <div class="user-card">
+            <span class="avatar" aria-hidden="true">{{ shell.initial }}</span>
+            <div><strong>{{ shell.viewer.label }}</strong><small>{{ shell.viewer.role_label }}</small></div>
+            <a class="btn subtle small" href="/auth/logout">退出</a>
+          </div>
+        </div>
+      </aside>
+      <button class="nav-backdrop" data-action="toggle-nav" type="button" aria-label="关闭导航"></button>
+      <main class="workspace">
+        <header class="topbar">
+          <div class="topbar-title">
+            <button class="btn subtle icon-only" id="menu-toggle" data-action="toggle-nav" data-icon="menu" aria-label="打开导航" aria-expanded="false" type="button"></button>
+            <div>
+              <nav class="breadcrumb" aria-label="当前位置">
+                <span>{{ site }}</span><span aria-hidden="true">/</span>
+                {% if crumb_href %}<a href="{{ crumb_href }}">{{ section }}</a>{% else %}<span>{{ section }}</span>{% endif %}
+              </nav>
+              <h1>{{ heading or title }}</h1>
+            </div>
+          </div>
+          <div class="top-actions">
+            {% block actions %}{% endblock %}
+            <button id="reload" class="btn subtle icon-only" data-icon="refresh" type="button" aria-label="刷新当前页面" title="刷新"></button>
+            <button id="theme-toggle" class="btn subtle icon-only" type="button" aria-label="切换深浅色主题"></button>
+          </div>
+        </header>
+        <section class="content">
+          {% if flash %}<div id="flash" data-type="{{ flash[0] }}" hidden>{{ flash[1] }}</div>{% endif %}
+          {% block content %}{% endblock %}
+        </section>
+      </main>
+    </div>
+    {% block dialogs %}{% endblock %}
+  </body>
+</html>

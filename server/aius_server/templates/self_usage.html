@@ -1,0 +1,91 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import range_bar, stat, delta, change_stat, chart, shares, paging %}
+{% set title = "我的用量" if mine else p.name ~ " 的用量" %}
+{% set section = "洞察" %}
+
+{% block actions %}
+<a class="btn" href="{{ url_with('/self-usage/export.xlsx', **dict(rng.query, **keep)) }}">{{ icon("download") }}导出 Excel</a>
+{% endblock %}
+
+{% block content %}
+{{ range_bar(rng, "/self-usage", keep) }}
+
+{% if not mine %}<p class="notice">你正在看 <b>{{ p.name }}</b>（{{ p.dept_path }}）的用量。<a href="{{ url_with('/self-usage', **rng.query) }}">回到我的用量</a></p>{% endif %}
+
+<div class="stats">
+  {{ stat("消耗点数", p.total|compact, "折算 " ~ p.cost|money, full=p.total) }}
+  {{ change_stat(p) }}
+  {{ stat("使用次数", p.records|num, "每用一次 AI 功能记一次") }}
+  {{ stat("活跃天数", p.active_days ~ " / " ~ p.days, "有用量的天数 / 总天数") }}
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head"><div><h2>每天的用量</h2><p>{{ rng.label }}，单位：点</p></div></div>
+    {{ chart(usage, "每天的 AI 用量，合计 " ~ p.total|num ~ " 点", "这段时间没有用量记录。") }}
+  </section>
+
+  <section class="panel">
+    <div class="section-head"><div><h2>用在哪里</h2><p>按产品和场景</p></div></div>
+    {{ shares(p.products, "这段时间没有用量记录。", extra="records") }}
+    {% if p.scenarios %}
+    <details class="chart-data">
+      <summary>展开到具体场景</summary>
+      {{ shares(p.scenarios, "", extra="records") }}
+    </details>
+    {% endif %}
+  </section>
+</div>
+
+<div class="grid2">
+  <section class="panel">
+    <div class="section-head"><div><h2>额度类型</h2><p>消耗的是哪一类 AI 额度</p></div></div>
+    {{ shares(p.features, "这段时间没有用量记录。", extra="records") }}
+  </section>
+
+  <section class="panel">
+    <div class="section-head"><div><h2>所在部门</h2><p>{{ p.dept_path }}{{ "（只有整体数据，看不到其他同事的个人用量）" if mine }}</p></div></div>
+    {% if p.dept %}
+    <div class="row-item"><div><strong>部门用量</strong><p>部门成员这段时间一共消耗的点数</p></div><div class="row-meta"><strong>{{ p.dept.total|num }}</strong> 点</div></div>
+    <div class="row-item"><div><strong>活跃人数</strong><p>用过 AI 的成员 / 部门人数</p></div><div class="row-meta"><strong>{{ p.dept.active_members }}</strong> / {{ p.dept.headcount }}</div></div>
+    <div class="row-item"><div><strong>人均用量</strong><p>按活跃人数平均</p></div><div class="row-meta"><strong>{{ p.dept.per_capita|num(1) }}</strong> 点</div></div>
+    <div class="row-item">
+      <div><strong>{{ "我" if mine else "他" }}在部门里</strong><p>占部门用量的比例和排名</p></div>
+      <div class="row-meta"><strong>{{ p.dept.my_share|num(1) }}%</strong>{% if p.dept.my_rank %}<small>第 {{ p.dept.my_rank }} 名</small>{% endif %}</div>
+    </div>
+    {% if p.dept.scenarios %}
+    <h3>部门常用场景</h3>
+    {{ shares(p.dept.scenarios, "", extra="users") }}
+    {% endif %}
+    {% else %}
+    <p class="empty">通讯录里没有部门信息。</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel" id="logs">
+  <div class="section-head"><div><h2>使用明细</h2><p>每一次使用的时间、场景和消耗，共 {{ pager.total|num }} 条</p></div></div>
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>场景</th><th>额度类型</th><th>用量类型</th><th class="num">消耗（点）</th><th class="num">折算</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="nowrap">{{ r.date }}<small>{{ r.ts|clock }}</small></td>
+          <td>{{ r.scenario }}</td>
+          <td>{{ r.feature }}</td>
+          <td>{{ r.usage_type }}</td>
+          <td class="num">{{ r.amount|num }}</td>
+          <td class="num">{{ r.cost|money }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ paging(pager, "/self-usage", dict(rng.query, **keep)) }}
+  {% else %}
+  <p class="empty">这段时间没有使用记录。{{ "用过飞书里的 AI 功能（知识问答、智能纪要、豆包工作等）之后，同步完成就会出现在这里。" if mine }}</p>
+  {% endif %}
+</section>
+{% endblock %}

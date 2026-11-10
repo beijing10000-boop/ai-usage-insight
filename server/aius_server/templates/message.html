@@ -1,0 +1,5 @@
+{% extends "_plain.html" %}
+{% block body %}
+<p class="muted">{{ text }}</p>
+{% if user_name is not none %}<a class="setup-link" href="/">回到首页</a>{% endif %}
+{% endblock %}
