@@ -463,7 +463,8 @@ class SyncEngine:
         out = self._view(row)
         out["steps"] = [
             {**dict(s), "dataset_label": DATASET_LABELS.get(s["dataset"], s["dataset"])}
-            for s in self.db.q("SELECT * FROM sync_steps WHERE run_id=? ORDER BY id", (run_id,))
+            # 最新执行的在最前面：一年的同步有上千个步骤，正序排的话最近的进展要翻到最底下才看得到
+            for s in self.db.q("SELECT * FROM sync_steps WHERE run_id=? ORDER BY id DESC", (run_id,))
         ]
         return out
 

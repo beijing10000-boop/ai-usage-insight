@@ -69,6 +69,13 @@ def test_details_are_skipped_for_today(empty):
     assert kinds == ["log", "log"]  # 统计详情是 T+1，当天不去拉
 
 
+def test_steps_are_listed_newest_first(empty):
+    run = empty.sync(D2, D1)
+    ids = [s["id"] for s in run["steps"]]
+    assert ids == sorted(ids, reverse=True) and run["steps"][-1]["usage_date"] == D2  # 最早的在最后
+    assert run["steps"][0]["dataset"] == "names"  # 最后做的名称解析在最前面
+
+
 def test_pagination_collects_every_page(empty):
     empty.feishu.page_size = 2
     run = empty.sync(D1, D1)
