@@ -299,7 +299,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         """用量数据里出现过的应用，加上映射表里有的，各自现在显示什么名称。"""
         mapping = {r["app_id"]: r for r in c.db.q("SELECT * FROM app_mapping")}
         seen = {r["entity_id"]: r for r in c.db.q(
-            "SELECT entity_id, MAX(entity_type) AS t, SUM(used_quota) AS amount, MAX(usage_date) AS last FROM usage_logs WHERE subject='app' GROUP BY entity_id"
+            "SELECT entity_id, MAX(entity_type) AS t, SUM(amount) AS amount, MAX(usage_date) AS last FROM usage_agg WHERE subject='app' GROUP BY entity_id"
         )}  # fmt: skip
         out = []
         for app_id in {*mapping, *seen}:

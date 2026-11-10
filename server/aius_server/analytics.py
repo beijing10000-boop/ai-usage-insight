@@ -86,8 +86,8 @@ class Slice:
         self.f = f
         where, params = f.where()
         self.rows = db.q(
-            f"SELECT usage_date, subject, entity_id, department_id, SUM(used_quota) AS amount, COUNT(*) AS n "
-            f"FROM usage_logs WHERE {where} GROUP BY usage_date, subject, entity_id, department_id",
+            f"SELECT usage_date, subject, entity_id, department_id, SUM(amount) AS amount, SUM(n) AS n "
+            f"FROM usage_agg WHERE {where} GROUP BY usage_date, subject, entity_id, department_id",
             params,
         )
         self.member_total = sum(r["amount"] for r in self.rows if r["subject"] == "member")
@@ -159,10 +159,10 @@ class Analytics:
 
     # ---------- 日期范围 ----------
     def latest_date(self) -> str | None:
-        return self.db.val("SELECT MAX(usage_date) FROM usage_logs")
+        return self.db.val("SELECT MAX(usage_date) FROM usage_agg")
 
     def earliest_date(self) -> str | None:
-        return self.db.val("SELECT MIN(usage_date) FROM usage_logs")
+        return self.db.val("SELECT MIN(usage_date) FROM usage_agg")
 
     def default_range(self, days: int = 30) -> tuple[str, str]:
         """默认看到最近一个有数据的日子为止的 days 天；还没同步过就到昨天。"""
@@ -293,27 +293,32 @@ class Analytics:
         return out
 
     def rank_apps(self, cur: Slice, prev: Slice | None = None, limit: int | None = 20) -> list[dict]:
+        if not cur.by_app:
+            return []
+        # 名称来自映射表：手工 / Aily / 开放平台，以及同步时接口自己带的名称（_resolve_names 存进映射表）。
+        # 不去翻原始日志——那张表一天几万行，按应用分组要扫整段日期
         names = self.app_names()
-        seen = {
-            r["entity_id"]: r
+        ranked = sorted(cur.by_app.items(), key=lambda kv: -kv[1]["amount"])
+        picked = ranked[:limit] if limit else ranked
+        ids = [app_id for app_id, _a in picked]
+        types = {
+            r["entity_id"]: r["t"]
             for r in self.db.q(
-                "SELECT entity_id, MAX(entity_type) AS t, MAX(entity_name) AS name FROM usage_logs "
-                "WHERE subject='app' AND usage_date BETWEEN ? AND ? GROUP BY entity_id",
-                (cur.f.start, cur.f.end),
+                f"SELECT entity_id, MAX(entity_type) AS t FROM usage_agg WHERE subject='app' AND entity_id IN ({marks(len(ids))}) "
+                "AND usage_date BETWEEN ? AND ? GROUP BY entity_id",
+                (*ids, cur.f.start, cur.f.end),
             )
         }
-        ranked = sorted(cur.by_app.items(), key=lambda kv: -kv[1]["amount"])
         out = []
-        for app_id, a in ranked[:limit] if limit else ranked:
+        for app_id, a in picked:
             before = prev.by_app.get(app_id, {}).get("amount", 0.0) if prev else 0.0
-            # 名称：映射表（手工 / Aily / 开放平台）→ 接口自己带的名称 → 应用 ID
-            name = names.get(app_id) or (seen[app_id]["name"] if app_id in seen else "")
+            name = names.get(app_id, "")
             out.append(
                 {
                     "id": app_id,
                     "name": name or app_id,
                     "named": bool(name),
-                    "type": labels.entity_type(seen[app_id]["t"] if app_id in seen else None),
+                    "type": labels.entity_type(types.get(app_id)),
                     "amount": r2(a["amount"]),
                     "share": pct(a["amount"], cur.app_total),
                     "records": a["records"],
@@ -397,7 +402,7 @@ class Analytics:
         where, params = f.where()
         groups: dict[str, dict] = {}
         for r in self.db.q(
-            f"SELECT scenario, subject, entity_id, SUM(used_quota) AS amount, COUNT(*) AS n FROM usage_logs WHERE {where} GROUP BY scenario, subject, entity_id",
+            f"SELECT scenario, subject, entity_id, SUM(amount) AS amount, SUM(n) AS n FROM usage_agg WHERE {where} GROUP BY scenario, subject, entity_id",
             params,
         ):
             name = labels.top_scenario(r["scenario"]) if level == 1 else (r["scenario"] or labels.UNKNOWN_SCENARIO)
@@ -417,7 +422,7 @@ class Analytics:
         """按额度类型（feature_key）或付费 / 免费（usage_type）拆分。"""
         assert column in ("feature_key", "usage_type")
         where, params = f.where()
-        rows = self.db.q(f"SELECT {column} AS k, SUM(used_quota) AS amount, COUNT(*) AS n FROM usage_logs WHERE {where} GROUP BY {column}", params)
+        rows = self.db.q(f"SELECT {column} AS k, SUM(amount) AS amount, SUM(n) AS n FROM usage_agg WHERE {where} GROUP BY {column}", params)
         total = sum(r["amount"] for r in rows)
         name = labels.feature_key if column == "feature_key" else labels.usage_type
         return sorted(
@@ -431,8 +436,7 @@ class Analytics:
         got = {
             r["h"]: r
             for r in self.db.q(
-                f"SELECT CAST(strftime('%H', ts + 28800, 'unixepoch') AS INTEGER) AS h, SUM(used_quota) AS amount, COUNT(*) AS n "
-                f"FROM usage_logs WHERE {where} AND ts IS NOT NULL GROUP BY h",
+                f"SELECT hour AS h, SUM(amount) AS amount, SUM(n) AS n FROM usage_agg WHERE {where} AND hour IS NOT NULL GROUP BY h",
                 params,
             )
         }
@@ -511,7 +515,8 @@ class Analytics:
             among = f" OR entity_id IN ({marks(len(ids))})" if ids else ""
             where += " AND (scenario LIKE ? ESCAPE '\\' OR entity_id=?" + among + ")"
             params += ["%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", q, *ids]
-        total, amount = self.db.one(f"SELECT COUNT(*), COALESCE(SUM(used_quota), 0) FROM usage_logs WHERE {where}", params)
+        # 条数和合计从汇总表算（筛选条件用到的列汇总表里都有），只有这一页的记录去翻原始日志
+        total, amount = self.db.one(f"SELECT COALESCE(SUM(n), 0), COALESCE(SUM(amount), 0) FROM usage_agg WHERE {where}", params)
         rows = self.db.q(
             f"SELECT * FROM usage_logs WHERE {where} ORDER BY usage_date DESC, ts DESC, id DESC LIMIT ? OFFSET ?", [*params, limit, offset]
         )
@@ -625,7 +630,7 @@ class Analytics:
         where, params = f.where()
         best: dict[str, tuple[float, str]] = {}
         for r in self.db.q(
-            f"SELECT entity_id, scenario, SUM(used_quota) AS amount FROM usage_logs WHERE {where} AND subject='member' GROUP BY entity_id, scenario", params
+            f"SELECT entity_id, scenario, SUM(amount) AS amount FROM usage_agg WHERE {where} AND subject='member' GROUP BY entity_id, scenario", params
         ):
             if r["entity_id"] not in best or r["amount"] > best[r["entity_id"]][0]:
                 best[r["entity_id"]] = (r["amount"], r["scenario"] or labels.UNKNOWN_SCENARIO)

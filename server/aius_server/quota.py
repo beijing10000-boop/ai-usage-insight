@@ -47,13 +47,13 @@ class Quotas:
         if dimension == "department":
             tree = sorted(self.directory.subtree(target_id))
             return self.db.val(
-                f"SELECT SUM(used_quota) FROM usage_logs WHERE subject='member' AND usage_date BETWEEN ? AND ? AND department_id IN ({marks(len(tree))})",
+                f"SELECT SUM(amount) FROM usage_agg WHERE subject='member' AND usage_date BETWEEN ? AND ? AND department_id IN ({marks(len(tree))})",
                 (*span, *tree),
                 0.0,
             )
         subject = "member" if dimension == "member" else "app"
         return self.db.val(
-            "SELECT SUM(used_quota) FROM usage_logs WHERE subject=? AND entity_id=? AND usage_date BETWEEN ? AND ?", (subject, target_id, *span), 0.0
+            "SELECT SUM(amount) FROM usage_agg WHERE subject=? AND entity_id=? AND usage_date BETWEEN ? AND ?", (subject, target_id, *span), 0.0
         )
 
     def target_name(self, dimension: str, target_id: str) -> str:

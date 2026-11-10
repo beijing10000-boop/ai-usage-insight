@@ -70,16 +70,16 @@ class WeeklyReport:
 
         # 累计：从累计起始日到上周日
         for r in self.db.q(
-            f"SELECT entity_id, SUM(used_quota) AS v FROM usage_logs WHERE {where} AND usage_date BETWEEN ? AND ? GROUP BY entity_id",
+            f"SELECT entity_id, SUM(amount) AS v FROM usage_agg WHERE {where} AND usage_date BETWEEN ? AND ? GROUP BY entity_id",
             [*params, period["since"], period["end"]],
         ):
             of(r["entity_id"])["total"] = r["v"]
-        for r in self.db.q(f"SELECT entity_id, feature_key, SUM(used_quota) AS v FROM usage_logs WHERE {where} AND usage_date BETWEEN ? AND ? GROUP BY entity_id, feature_key", [*params, *span]):
+        for r in self.db.q(f"SELECT entity_id, feature_key, SUM(amount) AS v FROM usage_agg WHERE {where} AND usage_date BETWEEN ? AND ? GROUP BY entity_id, feature_key", [*params, *span]):
             rep = of(r["entity_id"])
             rep["week"] += r["v"]
             rep["features"][r["feature_key"]] = rep["features"].get(r["feature_key"], 0.0) + r["v"]
         for r in self.db.q(
-            f"SELECT entity_id, scenario, SUM(used_quota) AS v FROM usage_logs WHERE {where} AND usage_date BETWEEN ? AND ? GROUP BY entity_id, scenario ORDER BY v DESC",
+            f"SELECT entity_id, scenario, SUM(amount) AS v FROM usage_agg WHERE {where} AND usage_date BETWEEN ? AND ? GROUP BY entity_id, scenario ORDER BY v DESC",
             [*params, *span],
         ):
             scenes = of(r["entity_id"])["scenarios"]

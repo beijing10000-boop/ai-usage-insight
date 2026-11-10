@@ -100,6 +100,35 @@ def test_progress_is_visible_while_a_dataset_is_being_fetched(empty):
     assert run["progress"] is None and count(empty, "sync_runs", "progress<>''") == 0  # 结束后清掉
 
 
+def agg_matches_logs(env) -> bool:
+    """汇总表和原始日志按「日期 × 主体 × 对象 × 场景」对得上（点数和条数都一样）。"""
+    cols = "usage_date, subject, entity_id, scenario"
+    logs = {tuple(r)[:4]: (round(r[4], 6), r[5]) for r in env.db.q(f"SELECT {cols}, SUM(used_quota), COUNT(*) FROM usage_logs GROUP BY {cols}")}
+    agg = {tuple(r)[:4]: (round(r[4], 6), r[5]) for r in env.db.q(f"SELECT {cols}, SUM(amount), SUM(n) FROM usage_agg GROUP BY {cols}")}
+    return logs == agg
+
+
+def test_summary_table_always_matches_the_raw_logs(env):
+    assert agg_matches_logs(env) and env.db.val("SELECT COUNT(*) FROM usage_agg") < env.db.val("SELECT COUNT(*) FROM usage_logs") + 1
+    hours = {r[0] for r in env.db.q("SELECT hour FROM usage_agg WHERE subject='member'")}
+    assert hours == {10, 15}  # 北京时间的小时
+    env.feishu.usage[("log", "member", D1)] = stamped(MEMBER_D1[:2], D1)
+    env.sync(D1, D1)  # 重新同步：汇总表跟着整批替换
+    assert agg_matches_logs(env) and env.db.val("SELECT SUM(n) FROM usage_agg WHERE usage_date=? AND subject='member'", (D1,)) == 2
+
+
+def test_old_databases_get_the_summary_table_filled(tmp_path):
+    from aius_server.db import Database
+
+    db = Database(tmp_path / "a.db")
+    db.x("INSERT INTO usage_logs(usage_date, subject, ts, entity_type, entity_id, department_id, feature_key, usage_type, used_quota, scenario, run_id) "
+         "VALUES('2026-11-09','member',1794200000,2,'ou_x','d1',1,1,2.5,'知识问答',1),('2026-11-09','member',1794200100,2,'ou_x','d1',1,1,1.5,'知识问答',1)")  # fmt: skip
+    db.x("DELETE FROM usage_agg")  # 模拟升级前的库：只有原始日志，没有汇总
+    db2 = Database(tmp_path / "a.db")
+    # 1794200000 是北京时间 2026-11-09 12:53
+    assert [tuple(r) for r in db2.q("SELECT entity_id, scenario, hour, amount, n FROM usage_agg")] == [("ou_x", "知识问答", 12, 4.0, 2)]
+
+
 def test_old_databases_get_the_progress_column(tmp_path):
     import sqlite3
 
@@ -115,7 +144,7 @@ def test_old_databases_get_the_progress_column(tmp_path):
     c.commit()
     c.close()
     db = Database(path)
-    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 2
+    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 3
 
 
 def test_start_validates_dates_and_refuses_a_second_run(empty):
@@ -236,6 +265,7 @@ def test_fallback_does_not_happen_for_unrelated_errors_and_never_drops_other_app
     empty.feishu.usage_page = rejects_new_types
     run = empty.sync(D1, D1)  # 接口不认新类型：退回早期四类，但以前同步到的飞书项目 / CodeM 数据要留着
     assert run["status"] == "success" and count(empty, "usage_logs", "subject='app'") == 3
+    assert agg_matches_logs(empty)  # 汇总表只替换了那四类，没有多也没有少
     step = next(s for s in run["steps"] if s["dataset"] == "log_app")
     assert "只同步了其余四类应用" in step["message"]
 

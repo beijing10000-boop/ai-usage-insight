@@ -17,7 +17,7 @@ import time
 from datetime import date, datetime, timedelta
 
 from . import labels
-from .db import Database, dumps, loads
+from .db import AGG_INSERT, Database, dumps, loads
 from .directory import Directory
 from .feishu import CST, LEGACY_APP_ENTITY_TYPES, FeishuError
 from .labels import APP_ENTITY_TYPES, DETAIL_FIELDS, clean_scenario
@@ -289,6 +289,9 @@ class SyncEngine:
                     "usage_type, feature_key, used_quota, scenario, notes, run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     rows,
                 )
+                # 汇总表跟着一起换（同一个事务），统计页面看到的总是和明细一致
+                c.execute(f"DELETE FROM usage_agg WHERE {scope}", scope_params)
+                c.execute(AGG_INSERT.format(where=scope), scope_params)
             return len(rows)
         with self.db.tx() as c:
             c.execute(f"DELETE FROM usage_details WHERE {scope}", scope_params)
@@ -313,11 +316,11 @@ class SyncEngine:
         """这段日期里现在有多少人、多少部门、多少应用的用量（任务结果卡片上显示）。"""
         span = (start, end)
         return {
-            "members": self.db.val("SELECT COUNT(DISTINCT entity_id) FROM usage_logs WHERE subject='member' AND usage_date BETWEEN ? AND ?", span, 0),
+            "members": self.db.val("SELECT COUNT(DISTINCT entity_id) FROM usage_agg WHERE subject='member' AND usage_date BETWEEN ? AND ?", span, 0),
             "depts": self.db.val(
-                "SELECT COUNT(DISTINCT department_id) FROM usage_logs WHERE subject='member' AND department_id<>'' AND usage_date BETWEEN ? AND ?", span, 0
+                "SELECT COUNT(DISTINCT department_id) FROM usage_agg WHERE subject='member' AND department_id<>'' AND usage_date BETWEEN ? AND ?", span, 0
             ),
-            "apps": self.db.val("SELECT COUNT(DISTINCT entity_id) FROM usage_logs WHERE subject='app' AND usage_date BETWEEN ? AND ?", span, 0),
+            "apps": self.db.val("SELECT COUNT(DISTINCT entity_id) FROM usage_agg WHERE subject='app' AND usage_date BETWEEN ? AND ?", span, 0),
         }
 
     # ---------- 名称解析 ----------
@@ -338,7 +341,7 @@ class SyncEngine:
                 notes.append(f"{what}解析失败：{e}")
 
         def users() -> int:
-            ids = [r[0] for r in self.db.q("SELECT DISTINCT entity_id FROM usage_logs WHERE subject='member' AND usage_date BETWEEN ? AND ?", span)]
+            ids = [r[0] for r in self.db.q("SELECT DISTINCT entity_id FROM usage_agg WHERE subject='member' AND usage_date BETWEEN ? AND ?", span)]
             missing = self.directory.missing("user", ids)
             found = self.feishu.user_names(missing) if missing else {}
             self.directory.remember("user", found)
@@ -348,7 +351,7 @@ class SyncEngine:
             ids = [
                 r[0]
                 for r in self.db.q(
-                    "SELECT DISTINCT department_id FROM usage_logs WHERE subject='member' AND department_id<>'' AND usage_date BETWEEN ? AND ?", span
+                    "SELECT DISTINCT department_id FROM usage_agg WHERE subject='member' AND department_id<>'' AND usage_date BETWEEN ? AND ?", span
                 )
             ]
             missing = self.directory.missing("dept", ids)
@@ -479,4 +482,4 @@ class SyncEngine:
 
     def synced_dates(self, start: str, end: str) -> set[str]:
         """这段日期里哪些天已经有人员用量日志（发起同步前提醒用）。"""
-        return {r[0] for r in self.db.q("SELECT DISTINCT usage_date FROM usage_logs WHERE usage_date BETWEEN ? AND ?", (start, end))}
+        return {r[0] for r in self.db.q("SELECT DISTINCT usage_date FROM usage_agg WHERE usage_date BETWEEN ? AND ?", (start, end))}

@@ -13,7 +13,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# 从 usage_logs 生成 usage_agg 的那条语句；{where} 是要汇总的范围（同步时是刚写入的那个「日期 × 主体」）
+AGG_INSERT = (
+    "INSERT INTO usage_agg(usage_date, subject, entity_id, entity_type, department_id, scenario, feature_key, usage_type, hour, amount, n) "
+    "SELECT usage_date, subject, entity_id, MAX(entity_type), department_id, scenario, feature_key, usage_type, "
+    "CAST(strftime('%H', ts + 28800, 'unixepoch') AS INTEGER) AS h, SUM(used_quota), COUNT(*) "
+    "FROM usage_logs WHERE {where} GROUP BY usage_date, subject, entity_id, department_id, scenario, feature_key, usage_type, h"
+)
 
 SCHEMA = """
 -- 登录过的用户
@@ -134,6 +142,27 @@ CREATE TABLE IF NOT EXISTS usage_logs (
 CREATE INDEX IF NOT EXISTS usage_logs_date ON usage_logs(usage_date, subject);
 CREATE INDEX IF NOT EXISTS usage_logs_entity ON usage_logs(entity_id, usage_date);
 CREATE INDEX IF NOT EXISTS usage_logs_dept ON usage_logs(department_id, usage_date);
+CREATE INDEX IF NOT EXISTS usage_logs_time ON usage_logs(usage_date, ts);  -- 用量明细按时间倒序翻页（v3）
+CREATE INDEX IF NOT EXISTS usage_logs_subject ON usage_logs(subject, usage_date);  -- 只看应用日志时不用扫人员日志（v3）
+-- 用量日志的汇总（v3）：按「日期 × 对象 × 部门 × 场景 × 额度类型 × 用量类型 × 小时」加总。
+-- 一千人的企业一天几万条日志，汇总后一千多行；所有统计都从这里算，只有用量明细翻原始日志。
+-- 和 usage_logs 在同一个事务里一起整批替换（sync.py），不会对不上
+CREATE TABLE IF NOT EXISTS usage_agg (
+    usage_date    TEXT NOT NULL,
+    subject       TEXT NOT NULL,
+    entity_id     TEXT NOT NULL,
+    entity_type   INTEGER,
+    department_id TEXT NOT NULL DEFAULT '',
+    scenario      TEXT NOT NULL DEFAULT '',
+    feature_key   INTEGER,
+    usage_type    INTEGER,
+    hour          INTEGER,                     -- 北京时间 0–23；日志没有时间的是 NULL
+    amount        REAL NOT NULL DEFAULT 0,     -- 消耗点数之和
+    n             INTEGER NOT NULL DEFAULT 0   -- 使用次数（日志条数）
+);
+CREATE INDEX IF NOT EXISTS usage_agg_date ON usage_agg(usage_date, subject);
+CREATE INDEX IF NOT EXISTS usage_agg_entity ON usage_agg(entity_id, usage_date);
+CREATE INDEX IF NOT EXISTS usage_agg_dept ON usage_agg(department_id, usage_date);
 -- AI 用量统计详情（admin/v1/ai_usage_detail/query，T+1）：一行 = 某天某个对象各类额度的用量汇总。
 -- q1..q6 对应额度类型 1..6（labels.FEATURE_KEYS）
 CREATE TABLE IF NOT EXISTS usage_details (
@@ -222,6 +251,10 @@ class Database:
         columns = {r["name"] for r in c.execute("PRAGMA table_info(sync_runs)")}
         if "progress" not in columns:
             c.execute("ALTER TABLE sync_runs ADD COLUMN progress TEXT NOT NULL DEFAULT ''")
+        # v3 加的汇总表：老库里已经同步过的日志，一次性汇总过来
+        if c.execute("SELECT 1 FROM usage_logs LIMIT 1").fetchone() and not c.execute("SELECT 1 FROM usage_agg LIMIT 1").fetchone():
+            with self.tx() as t:
+                t.execute(AGG_INSERT.format(where="1=1"))
         c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def _conn(self) -> sqlite3.Connection:
