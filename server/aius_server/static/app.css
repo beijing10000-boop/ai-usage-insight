@@ -83,6 +83,50 @@ a.stat:hover {
   color: var(--text-3);
 }
 
+/* 部门运营的页头：当前部门 + 切换部门 */
+.panel.dept-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+  padding: 16px 22px;
+}
+.dept-info {
+  min-width: 0;
+}
+.dept-info .trail {
+  margin: 0 0 4px;
+  font-size: 12px;
+}
+.dept-info h2 {
+  margin: 0;
+  font-size: 19px;
+}
+.dept-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.dept-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+.dept-switch label {
+  margin: 0;
+  white-space: nowrap;
+}
+.dept-switch select {
+  width: auto;
+  min-width: 200px;
+  max-width: 320px;
+}
+
 /* 部门下钻的路径 */
 .trail {
   display: flex;
@@ -525,6 +569,18 @@ progress.meter.failed::-moz-progress-bar {
   }
 }
 @media (max-width: 860px) {
+  .panel.dept-head {
+    padding: 14px 16px;
+  }
+  .dept-switch {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .dept-switch select {
+    flex: 1;
+    min-width: 0;
+    max-width: none;
+  }
   .hero {
     padding: 22px 18px;
   }

@@ -273,5 +273,22 @@ def test_self_usage_hides_the_department_total_when_too_few_colleagues_use_ai(en
     assert "部门用量" in leader
 
 
+def test_dept_ops_header_uses_a_dropdown_and_never_calls_direct_members_a_department(env):
+    from conftest import log, stamped
+
+    admin = env.browser("admin@example.com")
+    page = admin.get(f"/dept-ops?dept=d-rd&start={D1}&end={D1}").text
+    # 运营管理员能切换全部一级部门：用下拉框；下钻到研发部时，选中的是它所在的一级部门
+    assert '<select id="dept-pick" name="dept">' in page and '<option value="d-tech" selected>技术中心</option>' in page
+    assert '<option value="d-sales">销售部</option>' in page and 'class="segmented" role="group" aria-label="切换部门"' not in page
+    assert "负责人 鲍勃" in page and "个下级部门有用量" not in page  # 研发部没有下级部门
+    # 只有直属成员有用量时，本期解读不能说「用量最高的部门是直属成员」
+    env.feishu.usage[("log", "member", D1)] = stamped([log("ou_alice", "d-tech", "知识问答", 7)], D1)
+    env.sync(D1, D1)
+    assert "直属成员」" not in admin.get(f"/dept-ops?dept=d-tech&start={D1}&end={D1}").text.split("本期解读")[1].split("</p>")[0]
+    bob = env.browser("bob@example.com").get("/dept-ops").text  # 只负责一个部门：不出现切换
+    assert 'id="dept-pick"' not in bob and "研发部" in bob
+
+
 def test_health(env):
     assert env.browser().get("/healthz").json()["ok"] is True

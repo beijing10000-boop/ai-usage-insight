@@ -14,20 +14,39 @@
 {% set k = o.kpis %}
 {{ range_bar(rng, "/dept-ops", {"dept": dept.id}) }}
 
-<div class="page-intro">
-  <nav class="trail" aria-label="部门路径">
-    {% for id, name, ok in trail %}
-    {% if not loop.first %}<span aria-hidden="true">›</span>{% endif %}
-    {% if loop.last %}<strong>{{ name }}</strong>{% elif ok %}<a href="{{ url_with('/dept-ops', dept=id, **rng.query) }}">{{ name }}</a>{% else %}<span>{{ name }}</span>{% endif %}
-    {% endfor %}
-    <span class="muted">· {{ headcount }} 人{% if leader %} · 负责人 {{ leader }}{% endif %}</span>
-  </nav>
-  {% if options|length > 1 %}
-  <div class="segmented" role="group" aria-label="切换部门">
-    {% for d in options %}<a class="{{ 'active' if d.id == dept.id }}" href="{{ url_with('/dept-ops', dept=d.id, **rng.query) }}">{{ d.name }}</a>{% endfor %}
+{# 部门信息一行：左边是当前部门（下钻时带上级路径）、人数、负责人；右边是切换部门。
+   可切换的部门可能有十几个（运营管理员看的是全部一级部门），所以用下拉框，不用一排按钮 #}
+{% set chain_ids = trail|map(attribute=0)|list %}
+<section class="panel dept-head">
+  <div class="dept-info">
+    {% if trail|length > 1 %}
+    <nav class="trail" aria-label="部门路径">
+      {% for id, name, ok in trail[:-1] %}
+      {% if not loop.first %}<span aria-hidden="true">›</span>{% endif %}
+      {% if ok %}<a href="{{ url_with('/dept-ops', dept=id, **rng.query) }}">{{ name }}</a>{% else %}<span>{{ name }}</span>{% endif %}
+      {% endfor %}
+      <span aria-hidden="true">›</span>
+    </nav>
+    {% endif %}
+    <h2>{{ dept.name }}</h2>
+    <p class="dept-meta">
+      <span>{{ headcount|num }} 人（含下级部门）</span>
+      {% if leader %}<span>负责人 {{ leader }}</span>{% endif %}
+      {% set active_children = o.depts|rejectattr("id", "equalto", "__direct__")|list|length %}
+      {% if active_children %}<span>{{ active_children }} 个下级部门有用量</span>{% endif %}
+    </p>
   </div>
+  {% if options|length > 1 %}
+  <form method="get" action="/dept-ops" class="dept-switch">
+    {% for k, v in rng.query.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}" />{% endfor %}
+    <label for="dept-pick">切换部门</label>
+    <select id="dept-pick" name="dept">
+      {% for d in options %}<option value="{{ d.id }}"{{ " selected" if d.id in chain_ids }}>{{ d.name }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="btn">查看</button>
+  </form>
   {% endif %}
-</div>
+</section>
 
 <p class="notice narrative"><b>本期解读</b>　{{ o.narrative }}</p>
 

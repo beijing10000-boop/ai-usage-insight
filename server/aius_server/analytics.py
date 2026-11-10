@@ -486,6 +486,7 @@ class Analytics:
         if not k["total"]:
             return "这段时间还没有用量数据。完成一次同步之后，这里会给出用量分布、增长来源和异常提醒。"
         trend = "上一个周期没有完整的数据可比" if k["change"] is None else f"比上一个周期{'增长' if k['change'] >= 0 else '下降'} {abs(k['change'])}%"
+        depts = [d for d in depts if d["id"] != DIRECT]  # 「直属成员」不是一个部门，不能说「用量最高的部门是直属成员」
         sources = [f"{kind}是「{rows[0]['name']}」" for kind, rows in (("部门", depts), ("应用", apps), ("场景", scenes)) if rows]
         where = f"；用量最高的{'，'.join(sources)}" if sources else ""
         alert = f"发现 {len(anomalies)} 条异常，建议先看「{anomalies[0]['title']}」。" if anomalies else "没有发现明显的异常。"
