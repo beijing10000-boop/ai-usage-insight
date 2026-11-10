@@ -34,7 +34,7 @@
         <div class="sidebar-foot">
           <div class="service-line">
             <span class="indicator"></span>
-            <span>{% if shell.syncing %}正在同步数据…{% elif shell.latest %}数据截至 {{ shell.latest }}{% else %}还没有同步过数据{% endif %}</span>
+            <span><span title="平台版本">v{{ version }}</span> · {% if shell.syncing %}正在同步数据…{% elif shell.latest %}数据截至 {{ shell.latest }}{% else %}还没有同步过数据{% endif %}</span>
           </div>
           <div class="user-card">
             <span class="avatar" aria-hidden="true">{{ shell.initial }}</span>
