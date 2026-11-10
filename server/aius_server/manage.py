@@ -51,6 +51,25 @@ def mask(value: str) -> str:
     return value if len(value) <= 8 else f"{value[:6]}…{value[-4:]}"
 
 
+def progress_text(run: dict) -> str:
+    """同步进度的一句话：完成了几个数据集、写入多少条；正在拉的那个数据集拉到了哪儿。
+    一个数据集要全部拉完才一次性写库，拉的过程中页面上的数据不会变，所以要把「正在拉」说清楚。"""
+    text = f"已完成 {run['done']} / {run['stats']['units']} 个数据集，写入 {run['total_rows']:,} 条"
+    p = run.get("progress")
+    if run["status"] == "queued":
+        return text + "。任务在排队，马上开始"
+    if p:
+        text += f"。正在拉 {p['day']} 的{p['label']}：第 {p['pages']:,} 页，已取到 {p['rows']:,} 条"
+        if p.get("reached"):
+            text += f"，拉到当天 {p['reached']}（从晚往早拉，拉到 00:00 就完成了）"
+        text += "，拉完后一次性写入"
+    if run["stats"]["failed"]:
+        text += f"；{run['stats']['failed']} 个数据集失败"
+    if run["stop_requested"]:
+        text += "；正在停止…"
+    return text
+
+
 def register(app: FastAPI, c: Ctx) -> None:
     def guard(request: Request, active: str):
         """GET 页面的统一检查：没登录 → 登录页；不是运营管理员 → 提示页。"""
@@ -122,6 +141,7 @@ def register(app: FastAPI, c: Ctx) -> None:
             return bad
         runs, _total = c.engine.runs(limit=1)
         active = c.engine.active()
+        running = c.engine.run(active["id"]) if active else None
         yesterday = (today() - timedelta(days=1)).isoformat()
         sources = {"page": "页面填写", "env": "环境变量", "": ""}
         creds = {
@@ -130,7 +150,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         }  # fmt: skip
         return c.page(
             "sync.html", viewer, "sync", request, creds=creds, callback_url=c.s.callback_url,
-            check=loads(c.db.meta("feishu_check"), None), running=c.engine.run(active["id"]) if active else None,
+            check=loads(c.db.meta("feishu_check"), None), running=running, running_text=progress_text(running) if running else "",
             last=runs[0] if runs else None, schedule=c.config.get("sync"), yesterday=yesterday, today=today().isoformat(),
             directory={"at": c.directory.synced_at(), "users": c.directory.total_headcount(), "depts": len(c.directory.depts()), "error": c.directory.last_error,
                        "hours": c.s.directory_sync_hours},
@@ -249,6 +269,7 @@ def register(app: FastAPI, c: Ctx) -> None:
             "active": {
                 "id": run["id"], "status": run["status"], "status_label": run["status_label"], "done": run["done"], "units": run["stats"]["units"],
                 "rows": run["total_rows"], "pages": run["stats"]["pages"], "failed": run["stats"]["failed"], "stop_requested": bool(run["stop_requested"]),
+                "progress": run["progress"], "text": progress_text(run),
             }
         }  # fmt: skip
 

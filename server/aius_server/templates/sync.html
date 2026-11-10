@@ -87,8 +87,9 @@
       </form>
     </div>
     <progress id="sync-bar" max="{{ [running.stats.units, 1]|max }}" value="{{ running.done }}" aria-label="同步进度"></progress>
-    <p class="small muted" id="sync-text">已完成 {{ running.done }} / {{ running.stats.units }} 个数据集，写入 {{ running.total_rows|num }} 条</p>
-    <p class="help">两个用量接口限频每秒 1 次，日期多、记录多时要等一会儿。可以离开这个页面，任务会在后台继续。</p>
+    <p class="small muted" id="sync-text" aria-live="polite">{{ running_text }}</p>
+    <p class="help">每一天有四个数据集（人员用量日志、应用用量日志、人员统计详情、应用统计详情）。两个用量接口限频每秒 1 次、每页 100 条，
+      一千人左右的企业一天的人员用量日志就有几万条，要拉二三十分钟；一个数据集拉完才写入，写入之后驾驶舱里才有数据。可以离开这个页面，任务会在后台继续。</p>
   </div>
   {% else %}
   <form method="post" action="/sync" class="sync-form" data-confirm="开始同步所选的这段日期？"

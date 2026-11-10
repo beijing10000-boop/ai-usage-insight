@@ -211,10 +211,12 @@
           if (!active) return void location.assign("/sync");
           $("#sync-bar").max = Math.max(active.units, 1);
           $("#sync-bar").value = active.done;
+          // 进度的说法由服务端拼好（和页面第一次打开时显示的一样）；旧版本服务端没有 text 时自己拼一句
           $("#sync-text").textContent =
+            active.text ||
             `${active.status_label}：已完成 ${active.done} / ${active.units} 个数据集，写入 ${number(active.rows)} 条` +
-            (active.failed ? `，${active.failed} 个失败` : "") +
-            (active.stop_requested ? "，正在停止…" : "");
+              (active.failed ? `，${active.failed} 个失败` : "") +
+              (active.stop_requested ? "，正在停止…" : "");
         }
       } catch {} // 一次没问到没关系，下次再问
       setTimeout(poll, 3000);

@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 -- 登录过的用户
@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     stats          TEXT NOT NULL DEFAULT '{}', -- JSON：各数据集写入条数、接口分页数、失败数
     error          TEXT NOT NULL DEFAULT '',
     resume_count   INTEGER NOT NULL DEFAULT 0,
-    stop_requested INTEGER NOT NULL DEFAULT 0
+    stop_requested INTEGER NOT NULL DEFAULT 0,
+    progress       TEXT NOT NULL DEFAULT ''    -- JSON：正在拉的「日期 × 数据集」拉到第几页、多少条（v2）
 );
 CREATE INDEX IF NOT EXISTS sync_runs_status ON sync_runs(status);
 -- 同步任务里每个「日期 × 数据集」的执行情况，执行日志详情用。
@@ -217,6 +218,10 @@ class Database:
         self._local = threading.local()
         c = self._conn()
         c.executescript(SCHEMA)
+        # 升级：老库里已经有的表，CREATE TABLE IF NOT EXISTS 不会加新列，要单独补
+        columns = {r["name"] for r in c.execute("PRAGMA table_info(sync_runs)")}
+        if "progress" not in columns:
+            c.execute("ALTER TABLE sync_runs ADD COLUMN progress TEXT NOT NULL DEFAULT ''")
         c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def _conn(self) -> sqlite3.Connection:

@@ -25,7 +25,7 @@ ROOT = "0"
 
 LOG_PATH = "/open-apis/admin/v1/ai_usage_log/query"
 DETAIL_PATH = "/open-apis/admin/v1/ai_usage_detail/query"
-USAGE_MIN_GAP = 1.1  # 两个用量接口限频 1 次/秒
+USAGE_MIN_GAP = 1.05  # 两个用量接口限频 1 次/秒；被限频时 _retry 会退避重试
 RATE_LIMIT_CODES = {99991400, 11232, 1000004}
 # 较早开通灰度的企业可能还不认 10（飞书项目）、13（CodeM 沙箱）这两种应用类型
 LEGACY_APP_ENTITY_TYPES = (5, 6, 7, 8)
@@ -360,14 +360,13 @@ class FeishuClient:
         if kind == "log":
             body["locale"] = "zh-CN"
         with self._usage_lock:
+            # 按「两次请求开始的间隔」限速：请求本身要花零点几秒，从上一次返回再等一整秒的话，实际只有每秒 0.7 次左右
             wait = self._usage_last + USAGE_MIN_GAP - time.monotonic()
             if wait > 0:
                 self.sleep(wait)
+            self._usage_last = time.monotonic()
             what = "查询 AI 用量" + ("日志" if kind == "log" else "统计详情")
-            try:
-                data = self._api("POST", LOG_PATH if kind == "log" else DETAIL_PATH, what, params=params, body=body, whole=True)
-            finally:
-                self._usage_last = time.monotonic()
+            data = self._api("POST", LOG_PATH if kind == "log" else DETAIL_PATH, what, params=params, body=body, whole=True)
         # 用量数据通常在 data 里；也认直接放在最外层的写法。这一天没有数据时飞书可能不带 items（当成空列表）；
         # 但连 data 这一层都没有就是返回格式变了，宁可报错也不要当成「没有数据」把这一天清空
         if isinstance(data.get("items"), list):

@@ -77,6 +77,47 @@ def test_pagination_collects_every_page(empty):
     assert step["pages"] == 3
 
 
+def test_progress_is_visible_while_a_dataset_is_being_fetched(empty):
+    """一个数据集要拉完才写库：拉的过程中要能看到拉到第几页、取到多少条、拉到当天几点。"""
+    from aius_server.manage import progress_text
+
+    engine = empty.ctx.engine
+    empty.feishu.page_size = 2
+    seen = []
+    original = empty.feishu.usage_page
+
+    def page(kind, subject, day, token="", app_types=APP_ENTITY_TYPES):
+        if (kind, subject, token) == ("log", "member", "4"):  # 第三页开始前看一眼进度
+            seen.append(engine.run(engine.active()["id"]))
+        return original(kind, subject, day, token, app_types)
+
+    empty.feishu.usage_page = page
+    run = empty.sync(D1, D1)
+    p = seen[0]["progress"]
+    assert p["day"] == D1 and p["dataset"] == "log_member" and p["pages"] == 2 and p["rows"] == 4 and p["reached"] == "10:00"
+    text = progress_text(seen[0])
+    assert "正在拉" in text and "人员用量日志" in text and "第 2 页" in text and "已取到 4 条" in text and "当天 10:00" in text
+    assert run["progress"] is None and count(empty, "sync_runs", "progress<>''") == 0  # 结束后清掉
+
+
+def test_old_databases_get_the_progress_column(tmp_path):
+    import sqlite3
+
+    from aius_server.db import Database
+
+    path = tmp_path / "old.db"
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE sync_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, trigger TEXT NOT NULL, actor TEXT NOT NULL, start_date TEXT NOT NULL, "
+              "end_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER, "
+              "heartbeat_at INTEGER, done_units TEXT NOT NULL DEFAULT '[]', stats TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', "
+              "resume_count INTEGER NOT NULL DEFAULT 0, stop_requested INTEGER NOT NULL DEFAULT 0)")  # fmt: skip
+    c.execute("INSERT INTO sync_runs(trigger, actor, start_date, end_date, status, created_at) VALUES('manual','x','2026-11-09','2026-11-09','running',1)")
+    c.commit()
+    c.close()
+    db = Database(path)
+    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 2
+
+
 def test_start_validates_dates_and_refuses_a_second_run(empty):
     engine = empty.ctx.engine
     tomorrow = (today() + timedelta(days=1)).isoformat()

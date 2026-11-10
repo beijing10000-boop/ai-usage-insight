@@ -174,8 +174,8 @@ class SyncEngine:
                     done.add(key)  # 统计详情是 T+1，当天还没有
                     continue
                 try:
-                    items, pages, app_types = self._fetch(run_id, kind, subject, day, app_types)
-                    rows = self._write(run_id, kind, subject, day, items, app_types)
+                    collected, pages, app_types = self._fetch(run_id, kind, subject, day, app_types)
+                    rows = self._write(kind, subject, day, collected, app_types)
                 except FeishuError as e:
                     stats["failed"] += 1
                     errors.append(f"{day} {DATASET_LABELS[dataset]}：{e}")
@@ -202,7 +202,7 @@ class SyncEngine:
             self._current = None
         stats.update(self._coverage(row["start_date"], row["end_date"]))
         self.db.x(
-            "UPDATE sync_runs SET status=?, finished_at=?, done_units=?, stats=?, error=? WHERE id=?",
+            "UPDATE sync_runs SET status=?, finished_at=?, done_units=?, stats=?, error=?, progress='' WHERE id=?",
             (status, int(time.time()), dumps(sorted(done)), dumps(stats), "\n".join(errors[:8]), run_id),
         )
         log.info("同步任务 #%s 结束：%s %s~%s %s", run_id, status, row["start_date"], row["end_date"], dumps(stats))
@@ -211,9 +211,12 @@ class SyncEngine:
         if self.db.val("SELECT stop_requested FROM sync_runs WHERE id=?", (run_id,), 0):
             raise _Stopped()
 
-    def _fetch(self, run_id: int, kind: str, subject: str, day: str, app_types: tuple[int, ...]) -> tuple[list[dict], int, tuple[int, ...]]:
-        items: list[dict] = []
+    def _fetch(self, run_id: int, kind: str, subject: str, day: str, app_types: tuple[int, ...]) -> tuple[list[tuple], int, tuple[int, ...]]:
+        """把一个「日期 × 数据集」的所有分页拉下来，每一页随到随转换成要写库的行（大企业一天几万条，
+        只留转换后的行比留接口原始的 JSON 省得多）。每拉一页记一次进度，页面上能看到拉到哪儿了。"""
+        rows: list[tuple] = []
         pages, token, seen = 0, "", set()
+        dataset = f"{kind}_{subject}"
         while True:
             self._check_stop(run_id)
             try:
@@ -226,44 +229,59 @@ class SyncEngine:
                     app_types = LEGACY_APP_ENTITY_TYPES
                     continue
                 raise
-            items.extend(page)
+            converted = self._rows(kind, subject, day, page, run_id)
+            rows.extend(converted)
             pages += 1
-            self.db.x("UPDATE sync_runs SET heartbeat_at=? WHERE id=?", (int(time.time()), run_id))
+            # 用量日志是从当天最晚往最早给的：这一页最早的那条记录的时间，就是「拉到当天几点了」
+            stamps = [r[2] for r in converted if kind == "log" and r[2]]
+            reached = datetime.fromtimestamp(min(stamps), CST).strftime("%H:%M") if stamps else ""
+            progress = {"day": day, "dataset": dataset, "label": DATASET_LABELS[dataset], "pages": pages, "rows": len(rows), "reached": reached}
+            self.db.x("UPDATE sync_runs SET heartbeat_at=?, progress=? WHERE id=?", (int(time.time()), dumps(progress), run_id))
             if not token:
-                return items, pages, app_types
+                return rows, pages, app_types
             if token in seen or pages >= MAX_PAGES:
                 raise FeishuError("分页异常：飞书接口返回了重复的分页标记")
             seen.add(token)
 
-    def _write(self, run_id: int, kind: str, subject: str, day: str, items: list[dict], app_types: tuple[int, ...] = APP_ENTITY_TYPES) -> int:
+    def _rows(self, kind: str, subject: str, day: str, items: list[dict], run_id: int) -> list[tuple]:
+        """接口返回的一页记录 → 要写进 usage_logs / usage_details 的行。"""
+        rows: list[tuple] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            entity_id, builtin_name = _entity(it, subject)
+            if not entity_id:
+                continue
+            if kind != "log":
+                values = [next((_num(it[f]) for f in fields if f in it), 0.0) for _key, fields in sorted(DETAIL_FIELDS.items())]
+                rows.append((day, subject, _int(it.get("entity_type")), entity_id, *values, run_id))
+                continue
+            ts = _int(it.get("time"))
+            if ts and ts > 10**11:  # 文档写的是毫秒；早期版本返回过秒
+                ts //= 1000
+            dept = str(it.get("department_id") or "")
+            if subject == "member" and dept in ("", "0"):
+                dept = self.directory.user_dept(entity_id)  # 接口没给部门（缺权限）：按通讯录里的部门算
+            notes = it.get("descriptions") or it.get("notes") or []
+            if isinstance(notes, dict):
+                notes = [notes]
+            rows.append(
+                (
+                    day, subject, ts, _int(it.get("entity_type")), entity_id,
+                    str(it.get("entity_name") or it.get("app_name") or it.get("name") or builtin_name),
+                    dept, _int(it.get("usage_type")), _int(it.get("feature_key")), _num(it.get("used_quota")),
+                    clean_scenario(it.get("scenario_translate")), dumps(notes) if notes else "", run_id,
+                )
+            )  # fmt: skip
+        return rows
+
+    def _write(self, kind: str, subject: str, day: str, rows: list[tuple], app_types: tuple[int, ...] = APP_ENTITY_TYPES) -> int:
         # 整批替换的范围。应用维度退回早期四类时，只替换这四类（和没有类型的），别把以前同步到的另外两类删掉
         scope, scope_params = "usage_date=? AND subject=?", [day, subject]
         if subject == "app" and app_types != APP_ENTITY_TYPES:
             scope += f" AND (entity_type IS NULL OR entity_type IN ({','.join('?' * len(app_types))}))"
             scope_params += list(app_types)
         if kind == "log":
-            rows = []
-            for it in items:
-                entity_id, builtin_name = _entity(it, subject)
-                if not entity_id:
-                    continue
-                ts = _int(it.get("time"))
-                if ts and ts > 10**11:  # 文档写的是毫秒；早期版本返回过秒
-                    ts //= 1000
-                dept = str(it.get("department_id") or "")
-                if subject == "member" and dept in ("", "0"):
-                    dept = self.directory.user_dept(entity_id)  # 接口没给部门（缺权限）：按通讯录里的部门算
-                notes = it.get("descriptions") or it.get("notes") or []
-                if isinstance(notes, dict):
-                    notes = [notes]
-                rows.append(
-                    (
-                        day, subject, ts, _int(it.get("entity_type")), entity_id,
-                        str(it.get("entity_name") or it.get("app_name") or it.get("name") or builtin_name),
-                        dept, _int(it.get("usage_type")), _int(it.get("feature_key")), _num(it.get("used_quota")),
-                        clean_scenario(it.get("scenario_translate")), dumps(notes) if notes else "", run_id,
-                    )
-                )  # fmt: skip
             with self.db.tx() as c:
                 c.execute(f"DELETE FROM usage_logs WHERE {scope}", scope_params)
                 c.executemany(
@@ -272,13 +290,6 @@ class SyncEngine:
                     rows,
                 )
             return len(rows)
-        rows = []
-        for it in items:
-            entity_id, _name = _entity(it, subject)
-            if not entity_id:
-                continue
-            values = [next((_num(it[f]) for f in fields if f in it), 0.0) for _key, fields in sorted(DETAIL_FIELDS.items())]
-            rows.append((day, subject, _int(it.get("entity_type")), entity_id, *values, run_id))
         with self.db.tx() as c:
             c.execute(f"DELETE FROM usage_details WHERE {scope}", scope_params)
             c.executemany(
@@ -463,6 +474,7 @@ class SyncEngine:
         end_ts = row["finished_at"] or int(time.time())
         out["seconds"] = max(0, end_ts - row["started_at"]) if row["started_at"] else None
         out["actor_name"] = "定时任务" if row["actor"] == "system" else self.directory.user_name(row["actor"])
+        out["progress"] = loads(row["progress"], None) if row["status"] == "running" else None
         return out
 
     def synced_dates(self, start: str, end: str) -> set[str]:
