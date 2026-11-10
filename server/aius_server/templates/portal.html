@@ -43,7 +43,7 @@
   <section class="panel">
     <div class="section-head">
       <div><h2>{{ "我用在哪里" if personal else "用量最高的场景" }}</h2><p>{{ rng.label }}，按一级场景</p></div>
-      <a class="btn small" href="{{ url_with('/self-usage' if personal else '/dashboard', **rng.query) }}{{ '' if personal else '#scenarios' }}">查看使用分布</a>
+      <a class="btn small" href="{{ url_with(more.partition('#')[0], **rng.query) }}{{ '#scenarios' if '#' in more }}">查看使用分布</a>
     </div>
     {{ shares(scenarios, "这段时间还没有用量数据。") }}
   </section>

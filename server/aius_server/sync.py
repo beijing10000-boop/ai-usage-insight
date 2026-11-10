@@ -16,6 +16,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta
 
+from . import labels
 from .db import Database, dumps, loads
 from .directory import Directory
 from .feishu import CST, LEGACY_APP_ENTITY_TYPES, FeishuError
@@ -65,6 +66,22 @@ def _num(value) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _rejects_entity_type(error: FeishuError) -> bool:
+    """这个错误是不是在说「参数 / 实体类型不对」（而不是没权限、限频、网络问题）。"""
+    text = str(error).lower()
+    return not error.retryable and any(word in text for word in ("entity_type", "entity type", "invalid param", "param", "参数"))
+
+
+def _entity(item: dict, subject: str) -> tuple[str, str]:
+    """(实体 ID, 内置名称)。飞书项目、CodeM 沙箱这类「整个产品算一个应用」的类型没有自己的应用 ID
+    （接口返回空或 -1），给它们一个按类型定的固定 ID，免得被丢掉或者几类混成一个。"""
+    entity_id = str(item.get("entity_id") or "")
+    etype = _int(item.get("entity_type"))
+    if subject == "app" and entity_id in ("", "-1") and etype is not None:
+        return f"builtin_{etype}", labels.entity_type(etype)
+    return entity_id, ""
 
 
 class SyncEngine:
@@ -130,9 +147,14 @@ class SyncEngine:
 
     def _run(self, row: sqlite3.Row) -> None:
         run_id = row["id"]
-        self._current = run_id
         now = int(time.time())
-        self.db.x("UPDATE sync_runs SET status='running', started_at=COALESCE(started_at, ?), heartbeat_at=? WHERE id=?", (now, now, run_id))
+        # 只接「等待中」的任务：刚好在这一刻被人点了停止的，就不跑了
+        claimed = self.db.x(
+            "UPDATE sync_runs SET status='running', started_at=COALESCE(started_at, ?), heartbeat_at=? WHERE id=? AND status='queued'", (now, now, run_id)
+        )
+        if not claimed.rowcount:
+            return
+        self._current = run_id
         done: set[str] = set(loads(row["done_units"], []))
         stats = {**{d: 0 for d in DATASETS}, "pages": 0, **loads(row["stats"], {}), "failed": 0}
         days = date_list(row["start_date"], row["end_date"])
@@ -153,7 +175,7 @@ class SyncEngine:
                     continue
                 try:
                     items, pages, app_types = self._fetch(run_id, kind, subject, day, app_types)
-                    rows = self._write(run_id, kind, subject, day, items)
+                    rows = self._write(run_id, kind, subject, day, items, app_types)
                 except FeishuError as e:
                     stats["failed"] += 1
                     errors.append(f"{day} {DATASET_LABELS[dataset]}：{e}")
@@ -163,7 +185,8 @@ class SyncEngine:
                 stats[dataset] += rows
                 stats["pages"] += pages
                 done.add(key)
-                self._step(run_id, day, dataset, pages, rows, "ok", "")
+                legacy = subject == "app" and app_types == LEGACY_APP_ENTITY_TYPES
+                self._step(run_id, day, dataset, pages, rows, "ok", "飞书接口不接受「飞书项目」「CodeM 沙箱应用」这两类，只同步了其余四类应用" if legacy else "")
                 self._save(run_id, done, stats)
             self._resolve_names(run_id, row["start_date"], row["end_date"])
             finished = len(done) - sum(1 for k in done if k.split("|")[1].startswith("detail") and k.split("|")[0] >= current_day)
@@ -196,8 +219,10 @@ class SyncEngine:
             try:
                 page, token = self.feishu.usage_page(kind, subject, day, token, app_types)
             except FeishuError as e:
-                # 应用维度第一页就被拒：可能是这家企业的灰度版本还不认新的应用类型，用早期的四种再试一次
-                if subject == "app" and pages == 0 and not e.retryable and app_types != LEGACY_APP_ENTITY_TYPES:
+                # 应用维度第一页因为参数被拒：可能是这家企业的灰度版本还不认新的应用类型，用早期的四种再试一次。
+                # 只在错误说的是参数 / 实体类型时才这么做——别的错误（没权限、token 失效……）照常算失败，
+                # 否则一次偶发错误就会让这一天少同步两类应用。
+                if subject == "app" and pages == 0 and app_types != LEGACY_APP_ENTITY_TYPES and _rejects_entity_type(e):
                     app_types = LEGACY_APP_ENTITY_TYPES
                     continue
                 raise
@@ -210,11 +235,16 @@ class SyncEngine:
                 raise FeishuError("分页异常：飞书接口返回了重复的分页标记")
             seen.add(token)
 
-    def _write(self, run_id: int, kind: str, subject: str, day: str, items: list[dict]) -> int:
+    def _write(self, run_id: int, kind: str, subject: str, day: str, items: list[dict], app_types: tuple[int, ...] = APP_ENTITY_TYPES) -> int:
+        # 整批替换的范围。应用维度退回早期四类时，只替换这四类（和没有类型的），别把以前同步到的另外两类删掉
+        scope, scope_params = "usage_date=? AND subject=?", [day, subject]
+        if subject == "app" and app_types != APP_ENTITY_TYPES:
+            scope += f" AND (entity_type IS NULL OR entity_type IN ({','.join('?' * len(app_types))}))"
+            scope_params += list(app_types)
         if kind == "log":
             rows = []
             for it in items:
-                entity_id = str(it.get("entity_id") or "")
+                entity_id, builtin_name = _entity(it, subject)
                 if not entity_id:
                     continue
                 ts = _int(it.get("time"))
@@ -229,13 +259,13 @@ class SyncEngine:
                 rows.append(
                     (
                         day, subject, ts, _int(it.get("entity_type")), entity_id,
-                        str(it.get("entity_name") or it.get("app_name") or it.get("name") or ""),
+                        str(it.get("entity_name") or it.get("app_name") or it.get("name") or builtin_name),
                         dept, _int(it.get("usage_type")), _int(it.get("feature_key")), _num(it.get("used_quota")),
                         clean_scenario(it.get("scenario_translate")), dumps(notes) if notes else "", run_id,
                     )
                 )  # fmt: skip
             with self.db.tx() as c:
-                c.execute("DELETE FROM usage_logs WHERE usage_date=? AND subject=?", (day, subject))
+                c.execute(f"DELETE FROM usage_logs WHERE {scope}", scope_params)
                 c.executemany(
                     "INSERT INTO usage_logs(usage_date, subject, ts, entity_type, entity_id, entity_name, department_id, "
                     "usage_type, feature_key, used_quota, scenario, notes, run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -244,13 +274,13 @@ class SyncEngine:
             return len(rows)
         rows = []
         for it in items:
-            entity_id = str(it.get("entity_id") or "")
+            entity_id, _name = _entity(it, subject)
             if not entity_id:
                 continue
             values = [next((_num(it[f]) for f in fields if f in it), 0.0) for _key, fields in sorted(DETAIL_FIELDS.items())]
             rows.append((day, subject, _int(it.get("entity_type")), entity_id, *values, run_id))
         with self.db.tx() as c:
-            c.execute("DELETE FROM usage_details WHERE usage_date=? AND subject=?", (day, subject))
+            c.execute(f"DELETE FROM usage_details WHERE {scope}", scope_params)
             c.executemany(
                 "INSERT INTO usage_details(usage_date, subject, entity_type, entity_id, q1, q2, q3, q4, q5, q6, run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 rows,

@@ -12,6 +12,19 @@ from aius_server.config import Settings
 from aius_server.feishu import DETAIL_PATH, LOG_PATH, FeishuClient, FeishuError, day_range, subjects_for
 
 
+class EnvVault:
+    """只从 Settings 里取凭证的保管箱（这里不测页面保存，那在 test_setup.py）。"""
+
+    def __init__(self, s: Settings):
+        self.s = s
+
+    def feishu(self) -> tuple[str, str]:
+        return self.s.feishu_app_id, self.s.feishu_app_secret
+
+    def aily(self) -> tuple[str, str]:
+        return self.s.aily_app_id, self.s.aily_app_secret
+
+
 def client(handler, **kw) -> tuple[FeishuClient, list[float]]:
     slept: list[float] = []
     s = Settings(public_url="http://x", data_dir=Path("."), secret_key="k" * 40, feishu_app_id="cli_app", feishu_app_secret="sec", **kw)
@@ -22,7 +35,7 @@ def client(handler, **kw) -> tuple[FeishuClient, list[float]]:
             return httpx.Response(200, json={"code": 0, "tenant_access_token": "t-" + body["app_id"], "expire": 7200})
         return handler(request)
 
-    return FeishuClient(s, http=httpx.Client(transport=httpx.MockTransport(route)), sleep=slept.append), slept
+    return FeishuClient(s, EnvVault(s), http=httpx.Client(transport=httpx.MockTransport(route)), sleep=slept.append), slept
 
 
 def test_day_range_is_the_beijing_calendar_day():
@@ -71,6 +84,25 @@ def test_usage_detail_request():
     body = json.loads(seen[0].content)
     assert seen[0].url.path == DETAIL_PATH and body["subject_type"] == 3 and "locale" not in body
     assert body["subjects"] == [{"entity_type": 5, "entity_ids": ["-1"]}, {"entity_type": 6, "entity_ids": ["-1"]}]
+
+
+def test_usage_response_shapes():
+    def serving(payload):
+        return client(lambda r: httpx.Response(200, json=payload))[0]
+
+    # 这一天没有数据时飞书可能不带 items：当成空
+    assert serving({"code": 0, "data": {"has_more": False}}).usage_page("log", "member", "2026-05-15") == ([], "")
+    assert serving({"code": 0, "data": {}}).usage_page("detail", "app", "2026-05-15") == ([], "")
+    # 数据直接放在最外层也认
+    assert serving({"code": 0, "items": [{"entity_id": "a"}], "has_more": False}).usage_page("log", "member", "2026-05-15") == ([{"entity_id": "a"}], "")
+    # 连 data 都没有：返回格式变了，报错，不能当成「没有数据」
+    with pytest.raises(FeishuError, match="返回格式可能变了"):
+        serving({"code": 0, "msg": "ok"}).usage_page("log", "member", "2026-05-15")
+    # 说还有下一页却不给分页标记：报错，不能只写第一页就当成完成
+    with pytest.raises(FeishuError, match="没有给分页标记"):
+        serving({"code": 0, "data": {"items": [{"entity_id": "a"}], "has_more": True}}).usage_page("log", "member", "2026-05-15")
+    with pytest.raises(FeishuError, match="不是列表"):
+        serving({"code": 0, "data": {"items": {"a": 1}}}).usage_page("log", "member", "2026-05-15")
 
 
 def test_usage_calls_are_spaced_out_for_the_one_per_second_limit():
@@ -185,6 +217,23 @@ def test_aily_names_use_the_aily_app_credentials():
 def test_check_reports_connection_and_tenant():
     fs, _ = client(lambda r: httpx.Response(200, json={"code": 0, "data": {"tenant": {"name": "示例公司"}}}))
     assert fs.check() == {"connected": True, "tenant": "示例公司", "aily": None}
+
+
+def test_verify_checks_a_pair_of_credentials_without_caching():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("verify 只换 token，不该调别的接口")
+
+    fs, _ = client(handler)
+    fs.verify("cli_new", "new-secret")  # 假的传输层对任何凭证都发 token
+    assert "cli_new" not in fs._tokens
+
+    def reject(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 10014, "msg": "app secret invalid"})
+
+    s = Settings(public_url="http://x", data_dir=Path("."), secret_key="k" * 40)
+    bad = FeishuClient(s, EnvVault(s), http=httpx.Client(transport=httpx.MockTransport(reject)), sleep=lambda _s: None)
+    with pytest.raises(FeishuError, match="app secret invalid"):
+        bad.verify("cli_new", "wrong")
 
 
 def test_send_card():

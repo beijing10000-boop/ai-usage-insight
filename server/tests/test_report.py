@@ -30,6 +30,9 @@ def test_period_is_last_monday_to_sunday(empty):
     report = empty.ctx.report
     p = report.period(date(2026, 11, 11))  # 周三
     assert p == {"start": "2026-11-02", "end": "2026-11-08", "since": "2026-01-01"}
+    # 一月初推送的是跨年那一周：累计从那一周所在的年份算起，不是从推送当天的年份
+    assert report.period(date(2027, 1, 4)) == {"start": "2026-12-28", "end": "2027-01-03", "since": "2027-01-01"}
+    assert report.period(date(2027, 1, 1)) == {"start": "2026-12-21", "end": "2026-12-27", "since": "2026-01-01"}
     empty.ctx.config.save("report", {"since": "2026-10-01"}, "ou_admin")
     assert report.period(date(2026, 11, 9))["since"] == "2026-10-01"  # 周一看的也是上一周
 

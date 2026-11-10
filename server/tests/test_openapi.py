@@ -50,7 +50,10 @@ def test_self_endpoints_return_only_the_callers_data(env):
     logs = dave.get("/openapi/v1/self-usage/logs", params=SPAN).json()
     assert logs["total"] == 1 and logs["items"][0]["scenario"] == "智能纪要>会议纪要>纪要生成"
     dept = dave.get("/openapi/v1/self-usage/department", params=SPAN).json()
-    assert dept["total"] == 31 and dept["my_rank"] == 2 and "鲍勃" not in str(dept)
+    # 研发部只有两个人用过：不给部门合计（31 减掉戴维自己的 1 就是鲍勃的个人用量）
+    assert dept["hidden"] is True and "total" not in dept and "scenarios" not in dept and "反推" in dept["note"]
+    mine = env.api("ou_bob").get("/openapi/v1/self-usage/department", params=SPAN).json()  # 鲍勃是研发部负责人，本来就能看
+    assert mine["hidden"] is False and mine["total"] == 31 and mine["my_rank"] == 1
     bob_details = env.api("ou_bob").get("/openapi/v1/self-usage/details", params=SPAN).json()
     assert bob_details["total"] == 1 and bob_details["items"][0]["quotas"][3] == 20
 

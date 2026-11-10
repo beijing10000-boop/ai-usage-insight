@@ -45,7 +45,10 @@
 
   <section class="panel">
     <div class="section-head"><div><h2>所在部门</h2><p>{{ p.dept_path }}{{ "（只有整体数据，看不到其他同事的个人用量）" if mine }}</p></div></div>
-    {% if p.dept %}
+    {% if p.dept and p.dept.hidden %}
+    <div class="row-item"><div><strong>部门人数</strong><p>通讯录里这个部门（含下级）的人数</p></div><div class="row-meta"><strong>{{ p.dept.headcount }}</strong> 人</div></div>
+    <p class="empty">这段时间部门里用过 AI 的同事不到 3 位，所以不显示部门的用量汇总：人太少时，从合计里一减就能看出某位同事的个人用量。</p>
+    {% elif p.dept %}
     <div class="row-item"><div><strong>部门用量</strong><p>部门成员这段时间一共消耗的点数</p></div><div class="row-meta"><strong>{{ p.dept.total|num }}</strong> 点</div></div>
     <div class="row-item"><div><strong>活跃人数</strong><p>用过 AI 的成员 / 部门人数</p></div><div class="row-meta"><strong>{{ p.dept.active_members }}</strong> / {{ p.dept.headcount }}</div></div>
     <div class="row-item"><div><strong>人均用量</strong><p>按活跃人数平均</p></div><div class="row-meta"><strong>{{ p.dept.per_capita|num(1) }}</strong> 点</div></div>

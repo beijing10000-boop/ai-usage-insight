@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from .access import ADMIN, REGULAR, ROLE_LABELS, ROLE_NOTES
 from .core import Ctx
 from .db import dumps, loads
-from .feishu import FeishuError
+from .feishu import CST, FeishuError
 from .labels import entity_type
 from .openapi import ENDPOINTS
 from .pages import Pager, page_number
@@ -31,6 +31,7 @@ AUDIT_ACTIONS = {
     "sync_start": "发起同步",
     "sync_stop": "停止同步",
     "check": "测试连接",
+    "credentials": "修改凭证",
     "directory": "同步通讯录",
     "config": "修改配置",
     "quota": "额度分配",
@@ -120,26 +121,82 @@ def register(app: FastAPI, c: Ctx) -> None:
         if bad:
             return bad
         runs, _total = c.engine.runs(limit=1)
+        active = c.engine.active()
         yesterday = (today() - timedelta(days=1)).isoformat()
+        sources = {"page": "页面填写", "env": "环境变量", "": ""}
+        creds = {
+            "app_id": mask(c.vault.feishu()[0]), "source": sources[c.vault.feishu_source()], "saved_at": c.vault.saved_at("feishu_app_secret"),
+            "aily_id": mask(c.vault.aily()[0]), "aily_source": sources[c.vault.aily_source()], "aily_saved": bool(c.vault.get("aily_app_id")),
+        }  # fmt: skip
         return c.page(
-            "sync.html", viewer, "sync", request,
-            app_id=mask(c.s.feishu_app_id) or "开发模式，未配置", aily=mask(c.s.aily_app_id) if c.s.aily_ready else "",
-            check=loads(c.db.meta("feishu_check"), None), running=c.engine.run(c.engine.active()["id"]) if c.engine.active() else None,
+            "sync.html", viewer, "sync", request, creds=creds, callback_url=c.s.callback_url,
+            check=loads(c.db.meta("feishu_check"), None), running=c.engine.run(active["id"]) if active else None,
             last=runs[0] if runs else None, schedule=c.config.get("sync"), yesterday=yesterday, today=today().isoformat(),
             directory={"at": c.directory.synced_at(), "users": c.directory.total_headcount(), "depts": len(c.directory.depts()), "error": c.directory.last_error,
                        "hours": c.s.directory_sync_hours},
             latest=c.analytics.latest_date(), earliest=c.analytics.earliest_date(), dev=c.s.dev_fake_login,
         )  # fmt: skip
 
+    def save_credentials(viewer, app_id: str, app_secret: str, aily_app_id: str, aily_app_secret: str, aily_clear: bool):
+        """修改飞书应用 / Aily 应用的凭证。留空的项保持不变；新凭证先连一次飞书，连不上就不保存（免得把所有人锁在外面）。"""
+        back = ("回到同步管理", "/sync")
+        if c.s.dev_fake_login:
+            return oops(viewer, "开发模式不能改凭证", "现在是开发模式（AIUS_DEV_FAKE_LOGIN），不连飞书，凭证用不上。", back, "sync")
+        app_id, app_secret, aily_app_id, aily_app_secret = (v.strip() for v in (app_id, app_secret, aily_app_id, aily_app_secret))
+        old_id, old_secret = c.vault.feishu()
+        changes: dict[str, str] = {}
+        notes: list[str] = []
+        new_id = app_id or old_id
+        if new_id != old_id or app_secret:
+            new_secret = app_secret or (old_secret if new_id == old_id else "")
+            if not new_secret:
+                return oops(viewer, "凭证没有保存", "换成另一个应用时，App Secret 要一起填。", back, "sync")
+            try:
+                c.fs.verify(new_id, new_secret)
+            except FeishuError as e:
+                return oops(viewer, "凭证没有保存", f"用新的凭证连不上飞书：{e}。原来的凭证没有动。", back, "sync")
+            changes.update(feishu_app_id=new_id, feishu_app_secret=new_secret)
+            notes.append("更换飞书应用" if new_id != old_id else "更新 App Secret")
+        if aily_clear:
+            changes.update(aily_app_id="", aily_app_secret="")
+            notes.append("清除 Aily 应用凭证")
+        elif aily_app_id or aily_app_secret:
+            old_aily_id, old_aily_secret = c.vault.aily()
+            aily_id = aily_app_id or old_aily_id
+            aily_secret = aily_app_secret or (old_aily_secret if aily_id == old_aily_id else "")
+            if not aily_id or not aily_secret:
+                return oops(viewer, "凭证没有保存", "Aily 应用的 App ID 和 App Secret 要一起填。", back, "sync")
+            try:
+                c.fs.verify(aily_id, aily_secret)
+            except FeishuError as e:
+                return oops(viewer, "凭证没有保存", f"Aily 应用的凭证连不上飞书：{e}。原来的凭证没有动。", back, "sync")
+            changes.update(aily_app_id=aily_id, aily_app_secret=aily_secret)
+            notes.append("更新 Aily 应用凭证")
+        if not changes:
+            return oops(viewer, "没有要保存的修改", "所有输入框都是空的。要改哪一项就填哪一项，留空的保持不变。", back, "sync")
+        c.vault.set(changes, viewer.open_id)
+        c.fs.forget_tokens()
+        c.db.set_meta("feishu_check", "")
+        c.db.audit(viewer.open_id, "credentials", "；".join(notes))
+        if changes.get("feishu_app_id", old_id) != old_id:
+            # 换了应用：每个人的 open_id 都变了，原来的角色、令牌都对不上。让当前这位管理员重新登录后继续是管理员
+            resp = RedirectResponse("/login?next=%2Fsync&done=app", status_code=303)
+            c.arm_admin_claim(resp)
+            return resp
+        return c.done("/sync#feishu", "credentials")
+
     @app.post("/sync")
     def sync_post(
         request: Request, action: str = Form(...), start: str = Form(""), end: str = Form(""), id: int = Form(0),
         enabled: str = Form(""), hour: str = Form(""), range_days: str = Form(""),
+        app_id: str = Form(""), app_secret: str = Form(""), aily_app_id: str = Form(""), aily_app_secret: str = Form(""), aily_clear: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
             return bad
         back = ("回到同步管理", "/sync")
+        if action == "credentials":
+            return save_credentials(viewer, app_id, app_secret, aily_app_id, aily_app_secret, aily_clear == "1")
         if action == "start":
             try:
                 run_id = c.engine.start(start, end or start, "manual", viewer.open_id)
@@ -238,8 +295,11 @@ def register(app: FastAPI, c: Ctx) -> None:
         if bad:
             return bad
         apps = app_rows()
+        llm = c.vault.llm()
+        model = {"base_url": llm["base_url"], "model": llm["model"], "has_key": bool(llm["api_key"]), "saved_at": c.vault.saved_at("llm_api_key"),
+                 "source": {"page": "页面填写", "env": "环境变量", "": ""}[llm["source"]], "on_page": bool(c.vault.get("llm_api_key"))}  # fmt: skip
         return c.page(
-            "config.html", viewer, "config", request, apps=apps, unnamed=sum(1 for a in apps if not a["name"]), aily=c.s.aily_ready,
+            "config.html", viewer, "config", request, apps=apps, unnamed=sum(1 for a in apps if not a["name"]), aily=bool(c.vault.aily()[0]), model=model,
             price=c.config.point_price, report=c.config.get("report"), period=c.report.period(), runs=c.report.runs(), weekdays=WEEKDAYS,
             sources={"manual": "手工", "api": "开放平台", "aily": "Aily"},
         )  # fmt: skip
@@ -248,11 +308,29 @@ def register(app: FastAPI, c: Ctx) -> None:
     def config_post(
         request: Request, action: str = Form(...), app_id: str = Form(""), name: str = Form(""), point_price: str = Form(""),
         enabled: str = Form(""), weekday: str = Form(""), hour: str = Form(""), scope: str = Form(""), since: str = Form(""),
+        llm_base_url: str = Form(""), llm_api_key: str = Form(""), llm_model: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
             return bad
         back = ("回到映射与推送", "/config")
+        if action == "llm_clear":
+            c.vault.set({"llm_base_url": "", "llm_api_key": "", "llm_model": ""}, viewer.open_id)
+            c.db.audit(viewer.open_id, "config", "清除 AI 模型配置")
+            return c.done("/config#llm", "llm_cleared")
+        if action == "llm_save":
+            current = c.vault.llm()
+            llm = {"base_url": llm_base_url.strip().rstrip("/"), "model": llm_model.strip(), "api_key": llm_api_key.strip() or current["api_key"]}
+            if not llm["base_url"].startswith(("http://", "https://")):
+                return oops(viewer, "AI 模型配置没有保存", "接口地址要以 http:// 或 https:// 开头，例如 https://api.example.com/v1。", back, "config")
+            if not llm["model"] or not llm["api_key"]:
+                return oops(viewer, "AI 模型配置没有保存", "接口地址、API Key 和模型名都要填（已经保存过 API Key 的话可以留空，表示不改）。", back, "config")
+            problem = c.insight.test(llm)
+            if problem:
+                return oops(viewer, "AI 模型配置没有保存", f"用这组配置调不通模型：{problem}", back, "config")
+            c.vault.set({"llm_base_url": llm["base_url"], "llm_api_key": llm["api_key"], "llm_model": llm["model"]}, viewer.open_id)
+            c.db.audit(viewer.open_id, "config", f"AI 模型：{llm['model']}")
+            return c.done("/config#llm", "llm_saved")
         if action == "mapping_save":
             if not app_id.strip() or not name.strip():
                 return oops(viewer, "应用名称没有保存", "应用 ID 和名称都要填。", back, "config")
@@ -312,7 +390,7 @@ def register(app: FastAPI, c: Ctx) -> None:
             return c.done("/connect", "revoked")
         if len(c.db.tokens_of(viewer.open_id)) >= 10:
             return c.notice(viewer, "令牌太多了", "每个人最多保留 10 个令牌，请先撤销不用的。", 400, ("回到接入管理", "/connect"), "connect")
-        name = label.strip()[:40] or f"令牌 {time.strftime('%Y-%m-%d %H:%M')}"
+        name = label.strip()[:40] or f"令牌 {datetime.now(CST):%Y-%m-%d %H:%M}"
         secret = c.new_token(viewer.open_id, name, days if days in TOKEN_DAYS and days else None)
         # 令牌明文只在这一次响应里出现（不跳转、不进地址栏、不落库）
         return connect_view(request, viewer, secret)
@@ -324,15 +402,28 @@ def register(app: FastAPI, c: Ctx) -> None:
         if bad:
             return bad
         leaders = sum(1 for d in c.directory.depts() if d.leader_id)
+        now = time.time()
+        # 全部个人访问令牌：有人离职、或者令牌可能泄露时，运营管理员可以在这里撤销（看不到令牌本身，库里只有哈希）
+        tokens = [
+            {**dict(t), "owner_name": c.directory.user_name(t["owner"]), "role": c.access.viewer(t["owner"]).role_label,
+             "expired": t["expires_at"] is not None and t["expires_at"] <= now, "gone": c.directory.user(t["owner"]) is None and c.directory.synced_at() is not None}
+            for t in c.db.q("SELECT token_hash, owner, label, created_at, expires_at, last_used_at FROM api_tokens ORDER BY created_at DESC")
+        ]  # fmt: skip
         return c.page("roles.html", viewer, "roles", request, admins=c.access.admins(), labels=ROLE_LABELS, notes=ROLE_NOTES, admin=ADMIN, regular=REGULAR,
-                      headcount=c.directory.total_headcount(), leaders=leaders)  # fmt: skip
+                      headcount=c.directory.total_headcount(), leaders=leaders, tokens=tokens)  # fmt: skip
 
     @app.post("/roles")
-    def roles_post(request: Request, action: str = Form(...), user: str = Form("")):
+    def roles_post(request: Request, action: str = Form(...), user: str = Form(""), token: str = Form("")):
         viewer, bad = c.poster(request)
         if bad:
             return bad
         back = ("回到角色权限", "/roles")
+        if action == "token_revoke":
+            row = c.db.one("SELECT owner, label FROM api_tokens WHERE token_hash=?", (token,))
+            if row:
+                c.db.x("DELETE FROM api_tokens WHERE token_hash=?", (token,))
+                c.db.audit(viewer.open_id, "token_revoke", f"撤销 {c.directory.user_name(row['owner'])} 的令牌「{row['label']}」")
+            return c.done("/roles#tokens", "revoked")
         if action == "grant":
             hits = [user] if c.directory.user(user) else [u.open_id for u in c.directory.search_users(user, 2)]
             if len(hits) != 1:

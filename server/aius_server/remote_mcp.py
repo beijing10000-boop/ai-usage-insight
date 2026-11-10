@@ -235,9 +235,14 @@ def build_remote_mcp(c: Ctx) -> tuple[BearerGate, MCPServer]:
 
         def work():
             viewer = who(ctx)
-            f, scope = c.scope_filter(viewer, first, last)
-            result = c.insight.ask(question, f, scope)
-            return {"answer": result["answer"], "by_model": result["model"], "scope": scope, "start": first, "end": last}
+            if not question.strip():
+                raise ToolError("question 不能为空")
+            if not c.may_ask(viewer.open_id):
+                raise ToolError("问得太快了，稍等几秒再问")
+            sc = c.scope(viewer, first, last)
+            result = c.insight.ask(question, sc.filter, sc.label, sc.parent)
+            c.db.audit(viewer.open_id, "insight_ask", question[:200], via="mcp")
+            return {"answer": result["answer"], "by_model": result["model"], "scope": sc.label, "start": first, "end": last}
 
         return await anyio.to_thread.run_sync(work)
 

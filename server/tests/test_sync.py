@@ -7,6 +7,7 @@ from datetime import timedelta
 
 import pytest
 
+from aius_server.analytics import Filter
 from aius_server.feishu import LEGACY_APP_ENTITY_TYPES, FeishuError
 from aius_server.labels import APP_ENTITY_TYPES
 from aius_server.sync import SyncError, today
@@ -160,6 +161,51 @@ def test_app_dimension_falls_back_to_the_early_entity_types(empty):
     assert run["status"] == "success" and run["stats"]["log_app"] == 2
     used = {c[5] for c in empty.feishu.calls if c[0] == "usage_page" and c[2] == "app"}
     assert used == {LEGACY_APP_ENTITY_TYPES}
+
+
+def test_fallback_does_not_happen_for_unrelated_errors_and_never_drops_other_app_types(empty):
+    from conftest import app_log
+
+    empty.feishu.usage[("log", "app", D1)] = stamped([app_log("cli_a", 30), app_log("", 40, etype=10), app_log("-1", 5, etype=13)], D1)
+    assert empty.sync(D1, D1)["status"] == "success"
+    apps = {r["entity_id"]: (r["entity_type"], r["entity_name"], r["used_quota"]) for r in empty.db.q("SELECT * FROM usage_logs WHERE subject='app'")}
+    # 飞书项目、CodeM 沙箱没有自己的应用 ID：各给一个固定 ID，不丢、不混在一起
+    assert apps == {"cli_a": (5, "", 30), "builtin_10": (10, "飞书项目", 40), "builtin_13": (13, "CodeM 沙箱应用", 5)}
+    an = empty.ctx.analytics
+    names = {a["id"]: a["name"] for a in an.rank_apps(an.slice(Filter(D1, D1)))}
+    assert names["builtin_10"] == "飞书项目"
+
+    original = empty.feishu.usage_page
+
+    def denied(kind, subject, day, token="", app_types=APP_ENTITY_TYPES):
+        if (kind, subject) == ("log", "app"):
+            raise FeishuError("查询 AI 用量日志失败：code=99991663 token expired")
+        return original(kind, subject, day, token, app_types)
+
+    empty.feishu.usage_page = denied
+    run = empty.sync(D1, D1)  # 不是参数问题：不回退，这个数据集算失败，原有数据不动
+    assert run["status"] == "partial" and count(empty, "usage_logs", "subject='app'") == 3
+    assert not [c for c in empty.feishu.calls if c[0] == "usage_page" and c[5] == LEGACY_APP_ENTITY_TYPES]
+
+    def rejects_new_types(kind, subject, day, token="", app_types=APP_ENTITY_TYPES):
+        if subject == "app" and 13 in app_types:
+            raise FeishuError("查询 AI 用量日志失败：code=1000001 invalid param: entity_type")
+        return [i for i in original(kind, subject, day, token, app_types)[0] if i.get("entity_type") in app_types], ""
+
+    empty.feishu.usage_page = rejects_new_types
+    run = empty.sync(D1, D1)  # 接口不认新类型：退回早期四类，但以前同步到的飞书项目 / CodeM 数据要留着
+    assert run["status"] == "success" and count(empty, "usage_logs", "subject='app'") == 3
+    step = next(s for s in run["steps"] if s["dataset"] == "log_app")
+    assert "只同步了其余四类应用" in step["message"]
+
+
+def test_a_run_stopped_just_before_the_worker_picks_it_up_does_not_run(empty):
+    engine = empty.ctx.engine
+    run_id = engine.start(D1, D1, "manual", "ou_admin")
+    row = empty.db.one("SELECT * FROM sync_runs WHERE id=?", (run_id,))  # 工作线程刚取到这一行……
+    engine.stop(run_id)  # ……这时有人点了停止
+    engine._run(row)
+    assert engine.run(run_id)["status"] == "stopped" and count(empty, "usage_logs") == 0
 
 
 def test_missing_department_falls_back_to_the_directory(empty):

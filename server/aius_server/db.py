@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_by TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
 );
+-- 页面上填写的凭证（飞书应用、Aily 应用、AI 模型），value 是加密后的密文，见 vault.py
+CREATE TABLE IF NOT EXISTS secrets (
+    name       TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+);
 -- 每个人自己保存的页面选项（部门圈选）
 CREATE TABLE IF NOT EXISTS user_prefs (
     open_id TEXT NOT NULL,

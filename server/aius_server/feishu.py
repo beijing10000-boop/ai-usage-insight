@@ -90,8 +90,9 @@ def _json(resp: httpx.Response, what: str) -> dict:
 
 
 class FeishuClient:
-    def __init__(self, settings: Settings, http: httpx.Client | None = None, sleep=time.sleep):
+    def __init__(self, settings: Settings, vault, http: httpx.Client | None = None, sleep=time.sleep):
         self.s = settings
+        self.vault = vault  # 应用凭证从这里取（页面上填的，或环境变量里的），每次调用现取，改了立即生效
         self.http = http or httpx.Client(timeout=30)
         self.sleep = sleep
         self._tokens: dict[str, tuple[str, float]] = {}
@@ -117,50 +118,73 @@ class FeishuClient:
                     raise
                 self.sleep(2 ** (attempt + 1))
 
+    def _app(self) -> tuple[str, str]:
+        app_id, app_secret = self.vault.feishu()
+        if not app_id:
+            raise FeishuError("还没有配置飞书应用凭证")
+        return app_id, app_secret
+
+    def _exchange(self, app_id: str, app_secret: str) -> dict:
+        return _json(
+            self._call(
+                "POST",
+                f"{self.s.feishu_open_base}/open-apis/auth/v3/tenant_access_token/internal",
+                json={"app_id": app_id, "app_secret": app_secret},
+            ),
+            "获取 tenant_access_token ",
+        )
+
     def _token(self, app_id: str = "", app_secret: str = "") -> str:
-        app_id, app_secret = app_id or self.s.feishu_app_id, app_secret or self.s.feishu_app_secret
+        if not app_id:
+            app_id, app_secret = self._app()
         with self._lock:
             cached = self._tokens.get(app_id)
             if cached and time.time() < cached[1]:
                 return cached[0]
-            body = _json(
-                self._call(
-                    "POST",
-                    f"{self.s.feishu_open_base}/open-apis/auth/v3/tenant_access_token/internal",
-                    json={"app_id": app_id, "app_secret": app_secret},
-                ),
-                "获取 tenant_access_token ",
-            )
+            body = self._exchange(app_id, app_secret)
             self._tokens[app_id] = (body["tenant_access_token"], time.time() + int(body.get("expire", 7200)) - 300)
             return body["tenant_access_token"]
 
-    def _api(self, method: str, path: str, what: str, params=None, body=None, token: str | None = None) -> dict:
+    def verify(self, app_id: str, app_secret: str) -> None:
+        """保存凭证之前先验一下：这对 App ID / App Secret 能不能换到 tenant_access_token。不能就抛 FeishuError。"""
+        self._exchange(app_id, app_secret)
+
+    def forget_tokens(self) -> None:
+        """凭证改了之后，丢掉缓存的 tenant_access_token。"""
+        with self._lock:
+            self._tokens.clear()
+
+    def _api(self, method: str, path: str, what: str, params=None, body=None, token: str | None = None, whole: bool = False) -> dict:
+        """调一个飞书接口，返回响应里的 data；whole=True 时返回整个响应体（调用方自己找数据在哪一层）。"""
+
         def once() -> dict:
             headers = {"Authorization": f"Bearer {token or self._token()}"}
             if body is not None:
                 headers["Content-Type"] = "application/json; charset=utf-8"
             resp = self._call(method, f"{self.s.feishu_open_base}{path}", params=params, json=body, headers=headers)
-            return _json(resp, what).get("data") or {}
+            payload = _json(resp, what)
+            return payload if whole else (payload.get("data") or {})
 
         return self._retry(once)
 
     # ---------- 登录 ----------
     def authorize_url(self, redirect_uri: str, state: str) -> str:
         query = urlencode(
-            {"client_id": self.s.feishu_app_id, "response_type": "code", "redirect_uri": redirect_uri, "state": state},
+            {"client_id": self._app()[0], "response_type": "code", "redirect_uri": redirect_uri, "state": state},
             quote_via=quote,
         )
         return f"{self.s.feishu_accounts_base}/open-apis/authen/v1/authorize?{query}"
 
     def login(self, code: str, redirect_uri: str) -> FeishuUser:
+        app_id, app_secret = self._app()
         body = _json(
             self._call(
                 "POST",
                 f"{self.s.feishu_open_base}/open-apis/authen/v2/oauth/token",
                 json={
                     "grant_type": "authorization_code",
-                    "client_id": self.s.feishu_app_id,
-                    "client_secret": self.s.feishu_app_secret,
+                    "client_id": app_id,
+                    "client_secret": app_secret,
                     "code": code,
                     "redirect_uri": redirect_uri,
                 },
@@ -185,17 +209,17 @@ class FeishuClient:
     def check(self) -> dict:
         """测试连接：能换到 tenant_access_token 就算已连接；企业名称拿不到不算失败。
         AI 用量权限是否开通，要到第一次真实同步才知道。"""
-        with self._lock:
-            self._tokens.pop(self.s.feishu_app_id, None)  # 不用缓存，真的去换一次
+        self.forget_tokens()  # 不用缓存，真的去换一次
         self._token()
         out = {"connected": True, "tenant": "", "aily": None}
         try:
             out["tenant"] = (self._api("GET", "/open-apis/tenant/v2/tenant/query", "获取企业信息").get("tenant") or {}).get("name") or ""
         except FeishuError:
             pass
-        if self.s.aily_ready:
+        aily_id, aily_secret = self.vault.aily()
+        if aily_id:
             try:
-                self._token(self.s.aily_app_id, self.s.aily_app_secret)
+                self._token(aily_id, aily_secret)
                 out["aily"] = True
             except FeishuError as e:
                 out["aily"] = str(e)
@@ -298,9 +322,10 @@ class FeishuClient:
 
     def aily_app_names(self) -> dict[str, str]:
         """Aily 应用和智能体的 ID → 名称（要配置 Aily 应用凭证，权限 aily:stats:read）。"""
-        if not self.s.aily_ready:
+        aily_id, aily_secret = self.vault.aily()
+        if not aily_id:
             return {}
-        token = self._token(self.s.aily_app_id, self.s.aily_app_secret)
+        token = self._token(aily_id, aily_secret)
         now = int(time.time())
         out: dict[str, str] = {}
         for kind in ("app", "agent"):
@@ -338,11 +363,26 @@ class FeishuClient:
             wait = self._usage_last + USAGE_MIN_GAP - time.monotonic()
             if wait > 0:
                 self.sleep(wait)
+            what = "查询 AI 用量" + ("日志" if kind == "log" else "统计详情")
             try:
-                data = self._api("POST", LOG_PATH if kind == "log" else DETAIL_PATH, "查询 AI 用量" + ("日志" if kind == "log" else "统计详情"), params=params, body=body)
+                data = self._api("POST", LOG_PATH if kind == "log" else DETAIL_PATH, what, params=params, body=body, whole=True)
             finally:
                 self._usage_last = time.monotonic()
-        return list(data.get("items") or []), (data.get("page_token") or "") if data.get("has_more") else ""
+        # 用量数据通常在 data 里；也认直接放在最外层的写法。这一天没有数据时飞书可能不带 items（当成空列表）；
+        # 但连 data 这一层都没有就是返回格式变了，宁可报错也不要当成「没有数据」把这一天清空
+        if isinstance(data.get("items"), list):
+            inner = data
+        elif isinstance(data.get("data"), dict):
+            inner = data["data"]
+        else:
+            raise FeishuError(f"{what}失败：返回里既没有 data 也没有 items，接口的返回格式可能变了")
+        items = inner.get("items") or []
+        if not isinstance(items, list):
+            raise FeishuError(f"{what}失败：返回的 items 不是列表")
+        token = inner.get("page_token") or ""
+        if inner.get("has_more") and not token:
+            raise FeishuError(f"{what}失败：飞书说还有下一页，但没有给分页标记")
+        return items, token if inner.get("has_more") else ""
 
     # ---------- 消息 ----------
     def send_card(self, open_id: str, card: dict) -> None:
@@ -468,6 +508,7 @@ class FakeFeishu:
         self.calls: list[tuple] = []
         self.sent: list[tuple[str, dict]] = []
         self.send_error: FeishuError | None = None
+        self.verify_error: FeishuError | None = None  # verify() 时抛出的错误（测试用）
 
     @staticmethod
     def open_id_for(key: str) -> str:
@@ -488,6 +529,14 @@ class FakeFeishu:
 
     def check(self) -> dict:
         return {"connected": True, "tenant": "演示企业", "aily": None}
+
+    def verify(self, app_id: str, app_secret: str) -> None:
+        self.calls.append(("verify", app_id))
+        if self.verify_error:
+            raise self.verify_error
+
+    def forget_tokens(self) -> None:
+        pass
 
     # ---- 通讯录 ----
     def list_departments(self) -> list[Dept]:

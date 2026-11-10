@@ -238,5 +238,40 @@ def test_range_errors_fall_back_to_the_default_with_a_notice(env):
     assert c.get("/dashboard?days=5").status_code == 200  # 不认识的天数按默认
 
 
+def test_odd_parameters_do_not_break_pages(env):
+    c = env.browser("admin@example.com")
+    for path in ("/data?feature=%C2%B2&usage=%C2%B2", "/data?feature=99999999999999999999", "/data?page=99999999999999999999999", "/logs?page=-5",
+                 "/dashboard?start=0001-01-01&end=0001-01-02", "/dashboard?start=9999-12-30&end=9999-12-31", "/dashboard?dept=no-such-dept",
+                 "/self-usage?member=", "/audit?page=abc", "/doubao-ops?by=year"):  # fmt: skip
+        assert c.get(path).status_code == 200, path
+    assert "日期超出了可查询的范围" in c.get("/dashboard?start=0001-01-01&end=0001-01-02").text
+
+
+def test_admin_can_revoke_anyones_token(env):
+    env.api("ou_dave")  # 戴维有一个令牌
+    token_hash = hash_secret("aius_test_ou_dave")
+    admin = env.browser("admin@example.com")
+    page = admin.get("/roles").text
+    assert "全部访问令牌" in page and "戴维" in page and "aius_test_ou_dave" not in page
+    assert env.browser("bob@example.com").post("/roles", data={"action": "token_revoke", "token": token_hash}).status_code == 403
+    assert env.db.token_owner(token_hash) == "ou_dave"
+    assert admin.post("/roles", data={"action": "token_revoke", "token": token_hash}).headers["location"] == "/roles?done=revoked#tokens"
+    assert env.db.token_owner(token_hash) is None
+
+
+def test_leader_portal_stays_inside_their_departments(env):
+    bob = env.browser("bob@example.com")
+    page = bob.get(f"/?start={D1}&end={D1}").text
+    assert 'href="/dept-ops?' in page and 'href="/dashboard' not in page  # 负责人打不开驾驶舱，链接不能指过去
+    assert "占在职 100%" in page  # 研发部 2 人都用过；不是按全企业 7 人算的 28.6%
+
+
+def test_self_usage_hides_the_department_total_when_too_few_colleagues_use_ai(env):
+    page = env.browser("dave@example.com").get(f"/self-usage?start={D1}&end={D1}").text
+    assert "不到 3 位" in page and "部门用量" not in page
+    leader = env.browser("bob@example.com").get(f"/self-usage?start={D1}&end={D1}").text  # 负责人本来就能看本部门
+    assert "部门用量" in leader
+
+
 def test_health(env):
     assert env.browser().get("/healthz").json()["ok"] is True

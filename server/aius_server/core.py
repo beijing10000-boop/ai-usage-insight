@@ -19,16 +19,21 @@ from .analytics import Analytics, Filter
 from .config import Settings
 from .db import Database
 from .directory import Directory
+from .feishu import ROOT
 from .insight import Insight
 from .prefs import Config
 from .quota import Quotas
 from .report import WeeklyReport
 from .sync import MAX_DAYS, SyncEngine
+from .vault import Vault
 
 SESSION_COOKIE = "aius_session"
 OAUTH_COOKIE = "aius_oauth"
+SETUP_COOKIE = "aius_setup"
+SETUP_TTL = 1800  # 完成首次配置（或更换飞书应用）后，多久之内登录的那个人成为运营管理员
 TOKEN_PREFIX = "aius_"
 PRESETS = (7, 30, 90)
+ASK_GAP = 3  # 同一个人两次向洞察助手提问至少间隔几秒
 
 # 操作成功后跳回页面时的提示：?done=<键> -> (类型, 文字)
 FLASH = {
@@ -48,6 +53,9 @@ FLASH = {
     "granted": ("success", "已设为运营管理员"),
     "role_removed": ("success", "已取消运营管理员"),
     "rollup_saved": ("success", "部门圈选已保存"),
+    "credentials": ("success", "飞书应用凭证已保存，已用新凭证连通飞书"),
+    "llm_saved": ("success", "AI 模型配置已保存，模型连接验证通过"),
+    "llm_cleared": ("success", "已清除 AI 模型配置"),
 }
 
 
@@ -89,9 +97,35 @@ class Ctx:
     quotas: Quotas
     insight: Insight
     report: WeeklyReport
+    vault: Vault
 
     def __post_init__(self) -> None:
         self.signer = URLSafeTimedSerializer(self.s.secret_key, salt="aius-session")
+        self._asked: dict[str, float] = {}
+
+    # ---------- 首次配置之后的第一位运营管理员 ----------
+    def arm_admin_claim(self, response: Response) -> None:
+        """在这个浏览器上留一个记号：接下来 SETUP_TTL 秒内用它登录的人成为运营管理员。
+        用在两处：刚做完首次配置（还没有任何管理员）；管理员把飞书应用换成另一个（所有人的 open_id 都变了，原来的角色对不上）。"""
+        nonce = secrets.token_urlsafe(16)
+        self.db.set_meta("setup_nonce", f"{nonce}|{int(time.time())}")
+        response.set_cookie(SETUP_COOKIE, self.signer.dumps({"nonce": nonce}), max_age=SETUP_TTL, httponly=True, secure=self.s.cookie_secure, samesite="lax")
+
+    def claim_admin(self, request: Request, open_id: str) -> bool:
+        """登录成功时调用：浏览器带着有效的记号就把这个人设为运营管理员。记号只能用一次。"""
+        nonce, _, at = self.db.meta("setup_nonce").partition("|")
+        if not nonce or not at.isdigit() or time.time() - int(at) > SETUP_TTL:
+            return False
+        try:
+            data = self.signer.loads(request.cookies.get(SETUP_COOKIE, ""), max_age=SETUP_TTL)
+        except BadSignature:
+            return False
+        if not secrets.compare_digest(str(data.get("nonce", "")), nonce):
+            return False
+        self.db.set_meta("setup_nonce", "")
+        self.access.grant(open_id, "setup")
+        self.db.audit(open_id, "role_grant", "完成首次配置后第一个登录，成为运营管理员", via="system")
+        return True
 
     # ---------- 登录态 ----------
     def user(self, request: Request) -> Viewer | None:
@@ -105,7 +139,10 @@ class Ctx:
         return self.access.viewer(data["oid"], data.get("name", ""), data.get("email", ""))
 
     def need_login(self, request: Request) -> Response:
-        """没登录：就在被访问的地址上显示登录页（不直接跳飞书），登录后回到这个地址。"""
+        """没登录：就在被访问的地址上显示登录页（不直接跳飞书），登录后回到这个地址。
+        平台还没有配置飞书应用凭证时没法登录，去首次配置页面。"""
+        if not self.vault.configured:
+            return RedirectResponse("/setup", status_code=302)
         return web.login_page(request.url.path + (f"?{request.url.query}" if request.url.query else ""))
 
     def origin_ok(self, request: Request) -> bool:
@@ -177,6 +214,8 @@ class Ctx:
                 return self._preset(default_days, "日期要写成 2026-01-31 这样的格式，已改回默认范围")
             if first > last:
                 return self._preset(default_days, "开始日期不能晚于结束日期，已改回默认范围")
+            if first.year < 2020 or last.year > 2100:
+                return self._preset(default_days, "日期超出了可查询的范围，已改回默认范围")
             if (last - first).days + 1 > MAX_DAYS:
                 return self._preset(default_days, f"一次最多看 {MAX_DAYS} 天，已改回默认范围")
             return Range(first.isoformat(), last.isoformat(), None)
@@ -194,11 +233,30 @@ class Ctx:
         return (date.fromisoformat(day) - timedelta(days=6)).isoformat()
 
     # ---------- 数据范围 ----------
-    def scope_filter(self, viewer: Viewer, start: str, end: str) -> tuple[Filter, str]:
+    def scope(self, viewer: Viewer, start: str, end: str) -> "Scope":
         """这个人默认能看的数据范围：运营管理员看全企业，部门负责人看负责的部门，其他人看自己。"""
         if viewer.is_admin:
-            return Filter(start, end), "全企业"
+            return Scope(Filter(start, end), "全企业", ROOT, True)
         if viewer.led:
             names = "、".join(self.directory.dept_name(d) for d in viewer.led[:3])
-            return Filter(start, end, depts=frozenset(self.access.led_tree(viewer))), f"你负责的部门（{names}{'等' if len(viewer.led) > 3 else ''}）"
-        return Filter(start, end, member=viewer.open_id), f"{viewer.label} 个人"
+            label = f"你负责的部门（{names}{'等' if len(viewer.led) > 3 else ''}）"
+            # 只负责一个部门：部门排行、部门增长按它的下级部门拆。负责好几个互不相干的部门时没有共同的上级可拆
+            one = len(viewer.led) == 1
+            return Scope(Filter(start, end, depts=frozenset(self.access.led_tree(viewer))), label, viewer.led[0] if one else ROOT, one)
+        return Scope(Filter(start, end, member=viewer.open_id), f"{viewer.label} 个人", ROOT, False)
+
+    def may_ask(self, open_id: str) -> bool:
+        """洞察助手的提问间隔（网页和 MCP 共用）：同一个人两次提问至少隔 ASK_GAP 秒，免得被脚本拿来刷模型。"""
+        now = time.monotonic()
+        if now - self._asked.get(open_id, -ASK_GAP) < ASK_GAP:
+            return False
+        self._asked[open_id] = now
+        return True
+
+
+@dataclass(frozen=True)
+class Scope:
+    filter: Filter
+    label: str
+    parent: str  # 部门排行 / 部门增长按哪个部门的下级拆（根 = 一级部门）
+    by_dept: bool  # 这个范围里要不要看部门维度

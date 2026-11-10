@@ -14,6 +14,7 @@ import httpx
 
 from .analytics import Analytics, Filter
 from .config import Settings
+from .feishu import ROOT
 
 log = logging.getLogger("aius")
 
@@ -35,14 +36,41 @@ PERSONAL_SUGGESTIONS = ["我这段时间用了多少？", "我主要用在哪些
 
 
 class Insight:
-    def __init__(self, settings: Settings, analytics: Analytics, http: httpx.Client | None = None):
+    def __init__(self, settings: Settings, analytics: Analytics, vault, http: httpx.Client | None = None):
         self.s = settings
         self.analytics = analytics
+        self.vault = vault  # 模型地址、密钥、模型名从这里取（页面上填的，或环境变量里的）
         self.http = http or httpx.Client(timeout=settings.llm_timeout)
 
-    def data(self, f: Filter, scope: str) -> dict:
+    @property
+    def ready(self) -> bool:
+        return bool(self.vault.llm()["api_key"])
+
+    def _chat(self, llm: dict, messages: list[dict], max_tokens: int) -> str:
+        resp = self.http.post(
+            f"{llm['base_url'].rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {llm['api_key']}"},
+            json={"model": llm["model"], "temperature": 0.5, "max_tokens": max_tokens, "messages": messages},
+        )
+        resp.raise_for_status()
+        answer = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+        if not answer:
+            raise ValueError("模型没有返回内容")
+        return answer
+
+    def test(self, llm: dict) -> str | None:
+        """验证一组模型配置能不能用：发一句最短的话。能用返回 None，不能用返回原因。"""
+        try:
+            self._chat(llm, [{"role": "user", "content": "请只回复两个字：收到"}], 20)
+            return None
+        except httpx.HTTPStatusError as e:
+            return f"模型接口返回 HTTP {e.response.status_code}（401 / 403 多半是 API Key 不对，404 多半是地址或模型名不对）"
+        except Exception as e:
+            return f"连不上或返回的格式不对（{type(e).__name__}）"
+
+    def data(self, f: Filter, scope: str, parent: str = ROOT) -> dict:
         """给模型看的分析数据。个人范围不带人员排行（只有自己）；榜单各取前 8，够回答问题又不会太长。"""
-        o = self.analytics.overview(f)
+        o = self.analytics.overview(f, parent)  # parent：部门排行按哪个部门的下级拆（部门负责人是他负责的部门）
         k = o["kpis"]
 
         def top(rows: list[dict], keys: tuple[str, ...], n: int = 8) -> list[dict]:
@@ -97,32 +125,20 @@ class Insight:
         lines.append(f"\n{reason}")
         return "\n".join(lines)
 
-    def ask(self, question: str, f: Filter, scope: str) -> dict:
+    def ask(self, question: str, f: Filter, scope: str, parent: str = ROOT) -> dict:
         question = question.strip()[:MAX_QUESTION]
-        data = self.data(f, scope)
+        data = self.data(f, scope, parent)
         if not data["指标"]["总用量（点）"]:
             return {"answer": "这个时间范围内还没有用量数据。请先在「同步管理」里同步数据，或者换一个时间范围再问。", "model": False}
-        if not self.s.llm_ready:
-            return {"answer": self.fallback(data, "（还没有配置 AI 模型，以上是按数据直接整理的摘要。配置 AIUS_LLM_BASE_URL、AIUS_LLM_API_KEY、AIUS_LLM_MODEL 后可以用自然语言追问。）"), "model": False}
+        llm = self.vault.llm()
+        if not llm["api_key"]:
+            return {"answer": self.fallback(data, "（还没有配置 AI 模型，以上是按数据直接整理的摘要。运营管理员在「映射与推送 → AI 模型」里配置后，可以用自然语言追问。）"), "model": False}
         try:
-            resp = self.http.post(
-                f"{self.s.llm_base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.s.llm_api_key}"},
-                json={
-                    "model": self.s.llm_model,
-                    "temperature": 0.5,
-                    "max_tokens": 2000,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"用户问题：{question}\n\n分析数据：\n{json.dumps(data, ensure_ascii=False)}"},
-                    ],
-                },
-            )
-            resp.raise_for_status()
-            answer = (resp.json()["choices"][0]["message"].get("content") or "").strip()
-            if not answer:
-                raise ValueError("模型没有返回内容")
-            return {"answer": answer, "model": True}
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"用户问题：{question}\n\n分析数据：\n{json.dumps(data, ensure_ascii=False)}"},
+            ]
+            return {"answer": self._chat(llm, messages, 2000), "model": True}
         except Exception as e:  # 模型不可用不该让页面报错：退回数据摘要，并说明原因
             log.warning("洞察助手调用模型失败: %s %s", type(e).__name__, e)
             return {"answer": self.fallback(data, "（AI 模型暂时调用失败，以上是按数据直接整理的摘要，请稍后再试。）"), "model": False}

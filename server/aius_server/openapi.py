@@ -143,10 +143,14 @@ class Api:
         return {**_span(start, end), "total": total, "page": page, "size": size, "quota_types": list(labels.FEATURE_KEYS.values()), "items": [_detail(r) for r in rows]}
 
     def my_department(self, v: Viewer, start: str, end: str) -> dict:
-        p = self.an.member_profile(v.open_id, start, end)
+        visible = self.c.access.can_see_dept(v, self.c.directory.user_dept(v.open_id))
+        p = self.an.member_profile(v.open_id, start, end, dept_visible=visible)
         if not p["dept"]:
             raise ApiError(404, "通讯录里没有你的部门信息")
-        return {**_span(start, end), "path": p["dept_path"], **p["dept"]}
+        out = {**_span(start, end), "path": p["dept_path"], **p["dept"]}
+        if p["dept"]["hidden"]:
+            out["note"] = "部门里用过 AI 的同事太少，为了不让人反推出某位同事的个人用量，不提供部门的用量汇总"
+        return out
 
     # ---------- dept ----------
     def departments(self, v: Viewer) -> dict:

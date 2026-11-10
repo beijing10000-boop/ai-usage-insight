@@ -9,8 +9,9 @@ from typing import Any
 from .db import Database, dumps, loads
 
 DEFAULTS: dict[str, dict[str, Any]] = {
-    # 每日定时同步。飞书建议避开凌晨 2 点左右的请求高峰，所以默认 5 点
-    "sync": {"enabled": False, "hour": 5, "range_days": 1, "last_auto_date": ""},
+    # 每日定时同步。飞书建议避开凌晨 2 点左右的请求高峰，所以默认 5 点；默认同步前 2 天：
+    # 统计详情是 T+1 的，头一天同步时可能还没出齐，第二天顺带补上
+    "sync": {"enabled": False, "hour": 5, "range_days": 2, "last_auto_date": ""},
     # 点数折算费用：1 点 = point_price 元
     "pricing": {"point_price": 0.05},
     # AI 用量周报：weekday 1..7 = 周一..周日；scope: active（上周有用量的人）| all（通讯录里所有人）；
@@ -96,12 +97,16 @@ class Config:
         self._write(key, {field: value}, "system")
 
     def _write(self, key: str, patch: dict[str, Any], actor: str) -> dict[str, Any]:
-        merged = {**self.get(key), **patch}
-        self.db.x(
-            "INSERT INTO settings(key, value, updated_by, updated_at) VALUES(?,?,?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
-            (key, dumps(merged), actor, int(time.time())),
-        )
+        # 读出来、合并、写回去要在一个事务里：调度线程记「今天推送过了」和管理员保存配置撞在一起时，谁的修改都不能丢
+        with self.db.tx() as c:
+            row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            stored = loads(row["value"] if row else None, {})
+            merged = {**DEFAULTS[key], **{k: v for k, v in stored.items() if k in DEFAULTS[key]}, **patch}
+            c.execute(
+                "INSERT INTO settings(key, value, updated_by, updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+                (key, dumps(merged), actor, int(time.time())),
+            )
         return merged
 
     @property

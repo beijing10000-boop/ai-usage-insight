@@ -48,8 +48,11 @@ class WeeklyReport:
         """上一个完整的自然周（周一到周日），以及累计用量从哪天算起。"""
         now = now or datetime.now(CST).date()
         monday = now - timedelta(days=now.weekday())
-        since = self.config.get("report")["since"] or f"{now.year}-01-01"
-        return {"start": (monday - timedelta(days=7)).isoformat(), "end": (monday - timedelta(days=1)).isoformat(), "since": since}
+        end = monday - timedelta(days=1)
+        # 没设累计起始日：从周报这一周（按周日算）所在年份的 1 月 1 日算起。不能用推送当天的年份——
+        # 一月初推送的是跨年那一周，那样「累计」会比「上周」还少
+        since = self.config.get("report")["since"] or f"{end.year}-01-01"
+        return {"start": (monday - timedelta(days=7)).isoformat(), "end": end.isoformat(), "since": since}
 
     def reports(self, period: dict, only: list[str] | None = None) -> dict[str, dict]:
         """每个人的周报数据：open_id → {week, total, features, scenarios}。只含这段时间里有过用量的人。"""

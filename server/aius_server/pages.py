@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -22,7 +21,7 @@ from .insight import MAX_QUESTION, PERSONAL_SUGGESTIONS, SUGGESTIONS
 
 PAGE_SIZE = 50
 EXPORT_LIMIT = 100000
-ASK_GAP = 3  # 同一个人两次提问至少间隔几秒
+MAX_PAGE = 100000
 
 
 @dataclass
@@ -50,9 +49,14 @@ class Pager:
 
 def page_number(request: Request) -> int:
     try:
-        return max(1, int(request.query_params.get("page", 1)))
+        return min(MAX_PAGE, max(1, int(request.query_params.get("page", 1))))
     except ValueError:
         return 1
+
+
+def small_int(raw: str | None) -> int | None:
+    """地址参数里的小整数（额度类型、用量类型）；不是 1–99 的整数就当没给。"""
+    return int(raw) if raw and raw.isascii() and raw.isdigit() and len(raw) <= 2 else None
 
 
 # ---------- 图表数据：每个点是 {label 横轴文字, title 提示里的标题, value 数值, lines 提示里的补充行} ----------
@@ -87,7 +91,6 @@ def hourly_chart(hourly: list[dict]) -> dict:
 
 def register(app: FastAPI, c: Ctx) -> None:
     an = c.analytics
-    last_ask: dict[str, float] = {}
 
     def crumbs(dept_id: str) -> list[tuple[str, str]]:
         """部门下钻的路径：[(部门 ID, 名称)]，从最上级到当前。"""
@@ -101,41 +104,48 @@ def register(app: FastAPI, c: Ctx) -> None:
         if not viewer:
             return c.need_login(request)
         rng = c.pick_range(request)
-        f, scope = c.scope_filter(viewer, rng.start, rng.end)
+        sc = c.scope(viewer, rng.start, rng.end)
+        f = sc.filter
         cur, prev = an.slice(f), an.previous(f)
         personal = f.member is not None
+        # 「查看使用分布」去哪：运营管理员去驾驶舱，部门负责人去部门运营，其他人去我的用量
+        more = "/dashboard#scenarios" if viewer.is_admin else ("/dept-ops" if viewer.led else "/self-usage")
         return c.page(
             "portal.html", viewer, "portal", request,
-            rng=rng, scope=scope, personal=personal, k=an.kpis(cur, prev),
-            anomalies=[] if personal else an.anomalies(cur, prev),
+            rng=rng, scope=sc.label, personal=personal, k=an.kpis(cur, prev), more=more,
+            anomalies=[] if personal else an.anomalies(cur, prev, sc.parent, sc.by_dept),
             scenarios=an.scenarios(f, level=1, limit=5),
             suggestions=PERSONAL_SUGGESTIONS if personal else SUGGESTIONS,
-            llm=c.s.llm_ready, max_question=MAX_QUESTION,
+            llm=c.insight.ready, max_question=MAX_QUESTION,
         )  # fmt: skip
 
     @app.post("/insight/ask")
     async def insight_ask(request: Request):
+        try:
+            body = await request.json()
+            question = str(body.get("question", "")).strip() if isinstance(body, dict) else None
+        except Exception:
+            question = None
+        # 登录态、取数、调模型、记审计都要读写数据库或等网络，放到线程里做，不占事件循环
+        return await run_in_threadpool(answer, request, question)
+
+    def answer(request: Request, question: str | None):
         viewer = c.user(request)
         if not viewer:
             return JSONResponse({"error": "登录已过期，请刷新页面重新登录。"}, status_code=401)
         if not c.origin_ok(request):
             return JSONResponse({"error": "来源校验失败。"}, status_code=403)
-        try:
-            body = await request.json()
-            question = str(body.get("question", "")).strip()
-        except Exception:
+        if question is None:
             return JSONResponse({"error": "请求格式不对。"}, status_code=400)
         if not question:
             return JSONResponse({"error": "请先输入问题。"}, status_code=400)
-        now = time.monotonic()
-        if now - last_ask.get(viewer.open_id, 0) < ASK_GAP:
+        if not c.may_ask(viewer.open_id):
             return JSONResponse({"error": "问得太快了，稍等几秒再问。"}, status_code=429)
-        last_ask[viewer.open_id] = now
         rng = c.pick_range(request)
-        f, scope = c.scope_filter(viewer, rng.start, rng.end)
-        result = await run_in_threadpool(c.insight.ask, question, f, scope)
+        sc = c.scope(viewer, rng.start, rng.end)
+        result = c.insight.ask(question, sc.filter, sc.label, sc.parent)
         c.db.audit(viewer.open_id, "insight_ask", question[:200])
-        return {"html": md.render(result["answer"]), "model": result["model"], "scope": scope, "range": rng.label}
+        return {"html": md.render(result["answer"]), "model": result["model"], "scope": sc.label, "range": rng.label}
 
     # ---------- 运营驾驶舱 ----------
     def cockpit(viewer: Viewer, rng: Range, dept: str) -> dict:
@@ -282,8 +292,8 @@ def register(app: FastAPI, c: Ctx) -> None:
         opts = {
             "subject": q.get("subject", "") if q.get("subject") in ("member", "app") else "",
             "query": q.get("q", "").strip()[:100],
-            "feature_key": int(q["feature"]) if q.get("feature", "").isdigit() else None,
-            "usage_type": int(q["usage"]) if q.get("usage", "").isdigit() else None,
+            "feature_key": small_int(q.get("feature")),
+            "usage_type": small_int(q.get("usage")),
         }
         return f, opts
 
@@ -356,7 +366,8 @@ def register(app: FastAPI, c: Ctx) -> None:
         if denied:
             return denied
         rng = c.pick_range(request)
-        profile = an.member_profile(open_id, rng.start, rng.end)
+        # 运营管理员、这个人所在部门的负责人本来就能看部门成员的用量；其他人只能看到不会泄露同事个人数据的部门汇总
+        profile = an.member_profile(open_id, rng.start, rng.end, dept_visible=c.access.can_see_dept(viewer, c.directory.user_dept(open_id)))
         page = page_number(request)
         rows, total, _amount = an.logs(Filter(rng.start, rng.end, member=open_id), limit=20, offset=(page - 1) * 20)
         return c.page(

@@ -1,0 +1,71 @@
+{# 首次配置：平台还没有飞书应用凭证时显示。样子和运维控制台的首次配置页一致。 #}
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>首次配置 · {{ site }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ version }}" />
+    <link rel="stylesheet" href="/static/ui-kit.css?v={{ version }}" />
+    <link rel="stylesheet" href="/static/app.css?v={{ version }}" />
+    <script src="/static/ui-kit.js?v={{ version }}"></script>
+    <script defer src="/static/app.js?v={{ version }}"></script>
+  </head>
+  <body>
+    <main class="setup-screen">
+      <section class="setup-card">
+        <div class="logo">{{ icon("logo") }}</div>
+        <div class="eyebrow">首次配置</div>
+        <h1>{{ site }}</h1>
+        <p class="muted">填上飞书企业自建应用的凭证，平台就可以用飞书登录、同步 AI 用量了。这一步只需要做一次，之后可以在「同步管理」里修改。</p>
+
+        {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+        <form method="post" action="/setup">
+          <div class="fields">
+            <div class="wide">
+              <label for="s-token">初始化口令</label>
+              <input id="s-token" name="token" type="password" required autocomplete="off" placeholder="部署平台的人给你的一串口令" />
+              <p class="help">口令在服务器数据目录的 <code>bootstrap.token</code> 文件里，用来证明你是部署这个平台的人。配置完成后口令作废。</p>
+            </div>
+            <div>
+              <label for="s-app-id">App ID</label>
+              <input id="s-app-id" name="app_id" required autocomplete="off" value="{{ app_id }}" placeholder="cli_xxxxxxxxxxxxxxxx" />
+            </div>
+            <div>
+              <label for="s-app-secret">App Secret</label>
+              <input id="s-app-secret" name="app_secret" type="password" required autocomplete="off" placeholder="开放平台 → 凭证与基础信息" />
+            </div>
+            <div class="wide">
+              <p class="help">这个应用要开通 AI 用量、通讯录等权限并已发布（见项目 README「准备飞书应用」）。保存前会先用它连一次飞书，连不上不会保存；保存后页面上不再显示 App Secret。</p>
+            </div>
+            <div>
+              <label for="s-aily-id">Aily 应用 App ID（可以不填）</label>
+              <input id="s-aily-id" name="aily_app_id" autocomplete="off" value="{{ aily_app_id }}" placeholder="cli_xxxxxxxxxxxxxxxx" />
+            </div>
+            <div>
+              <label for="s-aily-secret">Aily 应用 App Secret（可以不填）</label>
+              <input id="s-aily-secret" name="aily_app_secret" type="password" autocomplete="off" />
+            </div>
+            <div class="wide">
+              <p class="help">Aily 应用只用来把 Aily 工作流应用和智能体的 ID 显示成名称（权限 <code>aily:stats:read</code>）。不填也能用，之后可以补。</p>
+            </div>
+          </div>
+
+          <h3>还要在飞书开放平台做一件事</h3>
+          <p class="muted">在这个应用的「安全设置 → 重定向 URL」里添加下面这个地址，否则飞书登录会报「重定向 URL 不合法」：</p>
+          <div class="add-row">
+            <input id="callback-url" readonly value="{{ callback_url }}" class="mono" aria-label="重定向 URL" />
+            <button type="button" class="btn" data-copy-from="callback-url">{{ icon("copy") }}复制</button>
+          </div>
+
+          <div class="form-actions">
+            <span class="muted">保存后请立刻用飞书登录：第一个登录的人（你）会成为运营管理员。</span>
+            <button type="submit" class="btn primary">保存并继续</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

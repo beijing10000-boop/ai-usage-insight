@@ -26,14 +26,17 @@
 <div class="grid2">
   <section class="panel" id="feishu">
     <div class="section-head">
-      <div><h2>飞书应用凭证</h2><p>登录、通讯录和 AI 用量接口都用这个企业自建应用；凭证写在服务器的 .env 里，不在页面上保存和显示</p></div>
-      <form method="post" action="/sync" class="inline">
-        <input type="hidden" name="action" value="check" />
-        <button type="submit" class="btn small">测试连接</button>
-      </form>
+      <div><h2>飞书应用凭证</h2><p>登录、通讯录和 AI 用量接口都用这个企业自建应用。凭证加密保存，页面上只显示 App ID，不显示 App Secret</p></div>
+      <div class="actions">
+        {% if not dev %}<button type="button" class="btn small" data-open-dialog="creds-dialog">修改凭证</button>{% endif %}
+        <form method="post" action="/sync" class="inline">
+          <input type="hidden" name="action" value="check" />
+          <button type="submit" class="btn small primary">测试连接</button>
+        </form>
+      </div>
     </div>
-    {{ row("企业自建应用", "FEISHU_APP_ID / FEISHU_APP_SECRET", app_id) }}
-    {{ row("Aily 应用", "可选（AILY_APP_ID / AILY_APP_SECRET）：用来把 Aily 应用和智能体的 ID 显示成名称", aily or "未配置", "" if aily else "warn") }}
+    {{ row("企业自建应用", ("App Secret 已设置 · " ~ creds.source ~ ((" · " ~ creds.saved_at|ago ~ "保存") if creds.saved_at else "")) if creds.app_id else "开发模式，不连飞书", creds.app_id or "未配置") }}
+    {{ row("Aily 应用", "可选：用来把 Aily 工作流应用和智能体的 ID 显示成名称" ~ ((" · " ~ creds.aily_source) if creds.aily_id else ""), creds.aily_id or "未配置", "" if creds.aily_id else "warn") }}
     {% if check %}
     {% if check.ok %}
     {{ row("连接状态", (check.tenant ~ " · " if check.tenant) ~ check.at|ago ~ "测试", "已连接", "ok") }}
@@ -146,4 +149,54 @@
     <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>
   </form>
 </section>
+{% endblock %}
+
+{% block dialogs %}
+{% if not dev %}
+<dialog id="creds-dialog" aria-labelledby="creds-title">
+  <form method="post" action="/sync" data-confirm="保存飞书应用凭证？"
+    data-confirm-message="保存前会先用新凭证连一次飞书，连不上不会保存。如果换成了另一个应用（App ID 变了）：所有人都要重新登录，已有的角色和访问令牌会失效，已同步的用量数据也要重新同步；你重新登录后仍是运营管理员。" data-confirm-text="保存">
+    <div class="modal-title">
+      <h2 id="creds-title">修改凭证</h2>
+      <button class="close" type="button" data-close-dialog data-icon="close" aria-label="关闭"></button>
+    </div>
+    <input type="hidden" name="action" value="credentials" />
+    <p class="notice">要改哪一项就填哪一项，留空的保持不变。只是重置了 App Secret 的话，只填 App Secret 就行。</p>
+    <div class="fields">
+      <div>
+        <label for="c-app-id">App ID</label>
+        <input id="c-app-id" name="app_id" autocomplete="off" placeholder="不改就留空（现在是 {{ creds.app_id }}）" />
+      </div>
+      <div>
+        <label for="c-app-secret">App Secret</label>
+        <input id="c-app-secret" name="app_secret" type="password" autocomplete="off" placeholder="不改就留空" />
+      </div>
+      <div>
+        <label for="c-aily-id">Aily 应用 App ID（可选）</label>
+        <input id="c-aily-id" name="aily_app_id" autocomplete="off" placeholder="{{ '不改就留空（现在是 ' ~ creds.aily_id ~ '）' if creds.aily_id else 'cli_xxxxxxxxxxxxxxxx' }}" />
+      </div>
+      <div>
+        <label for="c-aily-secret">Aily 应用 App Secret（可选）</label>
+        <input id="c-aily-secret" name="aily_app_secret" type="password" autocomplete="off" placeholder="{{ '不改就留空' if creds.aily_id else '' }}" />
+      </div>
+      {% if creds.aily_saved %}
+      <div class="wide">
+        <label class="check"><input type="checkbox" name="aily_clear" value="1" />清除页面上保存的 Aily 应用凭证</label>
+      </div>
+      {% endif %}
+      <div class="wide">
+        <label for="c-callback">重定向 URL（飞书开放平台 → 这个应用 → 安全设置里要有它）</label>
+        <div class="add-row">
+          <input id="c-callback" readonly value="{{ callback_url }}" class="mono" />
+          <button type="button" class="btn" data-copy-from="c-callback">{{ icon("copy") }}复制</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn" data-close-dialog>取消</button>
+      <button type="submit" class="btn primary">保存</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
 {% endblock %}

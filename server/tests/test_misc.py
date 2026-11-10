@@ -19,6 +19,7 @@ from aius_server.feishu import CST, FeishuError
 from aius_server.insight import Insight
 from aius_server.prefs import ConfigError, clean
 from aius_server.sync import today
+from aius_server.vault import Vault
 from conftest import D1, make_settings
 
 STATIC = Path(__file__).resolve().parents[1] / "aius_server" / "static"
@@ -73,14 +74,13 @@ def test_settings_from_env(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="AIUS_SECRET_KEY"):
         Settings.from_env()
     monkeypatch.setenv("AIUS_SECRET_KEY", "s" * 40)
-    with pytest.raises(RuntimeError, match="FEISHU_APP_ID"):
-        Settings.from_env()
+    assert Settings.from_env().feishu_app_id == ""  # 飞书凭证可以不放在环境变量里，在页面上填
     monkeypatch.setenv("FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("FEISHU_APP_SECRET", "sec")
     monkeypatch.setenv("AIUS_ADMINS", "A@Example.com, ou_ABC；b@example.com")
     s = Settings.from_env()
     assert s.public_url == "https://ai.example.com" and s.callback_url == "https://ai.example.com/auth/callback" and s.cookie_secure
-    assert s.admins == ("a@example.com", "ou_abc", "b@example.com") and not s.llm_ready and not s.aily_ready
+    assert s.admins == ("a@example.com", "ou_abc", "b@example.com") and s.feishu_app_id == "cli_x"
 
 
 # ---------- Excel ----------
@@ -143,7 +143,7 @@ def test_insight_sends_only_scoped_data_to_the_model(env, tmp_path):
         return httpx.Response(200, json={"choices": [{"message": {"content": "**结论**：用得不多。"}}]})
 
     s = make_settings(tmp_path / "x", llm_base_url="https://llm.example.com/v1", llm_api_key="sk-test", llm_model="demo-model")
-    insight = Insight(s, env.ctx.analytics, http=httpx.Client(transport=httpx.MockTransport(handler)))
+    insight = Insight(s, env.ctx.analytics, Vault(env.db, s), http=httpx.Client(transport=httpx.MockTransport(handler)))
     out = insight.ask("我用了多少？", Filter(D1, D1, member="ou_dave"), "戴维 个人")
     assert out == {"answer": "**结论**：用得不多。", "model": True}
     assert seen["url"] == "https://llm.example.com/v1/chat/completions" and seen["auth"] == "Bearer sk-test"
@@ -154,7 +154,7 @@ def test_insight_sends_only_scoped_data_to_the_model(env, tmp_path):
 
 def test_insight_falls_back_when_the_model_fails(env, tmp_path):
     s = make_settings(tmp_path / "y", llm_base_url="https://llm.example.com/v1", llm_api_key="k", llm_model="m")
-    insight = Insight(s, env.ctx.analytics, http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500, text="boom"))))
+    insight = Insight(s, env.ctx.analytics, Vault(env.db, s), http=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500, text="boom"))))
     out = insight.ask("怎么样", Filter(D1, D1), "全企业")
     assert out["model"] is False and "206 点" in out["answer"] and "暂时调用失败" in out["answer"]
     assert "还没有用量数据" in insight.ask("怎么样", Filter("2020-01-01", "2020-01-02"), "全企业")["answer"]

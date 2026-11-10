@@ -97,7 +97,7 @@ def test_what_a_token_can_see_follows_its_owner(live):
         [("aius_my_summary", span), ("aius_my_department", span), ("aius_overview", span), ("aius_department_members", {**span, "department_id": "d-rd"}), ("aius_ask", {**span, "question": "我用了多少"})]
     )
     (_, mine), (_, dept), overview, members, (_, ask) = dave["results"]
-    assert mine["total"] == 1 and dept["total"] == 31
+    assert mine["total"] == 1 and dept["hidden"] is True and "total" not in dept  # 部门里用的人太少，不给合计
     assert overview[0] and "运营管理员" in overview[1]
     assert members[0] and "不在你负责的范围内" in members[1]
     assert "戴维 个人" in ask["scope"] and "鲍勃" not in ask["answer"]

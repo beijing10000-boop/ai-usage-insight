@@ -1,7 +1,7 @@
 """运行配置，全部来自环境变量（见 .env.example）。
 
-密钥类的配置（飞书应用凭证、Aily 应用凭证、模型 API Key）只放在环境变量里，不进数据库、不在页面上回显；
-能在页面上改的运营配置（同步时间、单价、异常阈值、周报推送）存在数据库的 settings 表里，见 settings.py。
+飞书应用凭证、Aily 应用凭证、AI 模型配置默认在页面上填写（加密后存数据库，见 vault.py）；这里的同名环境变量是可选的，
+页面上没填时才用。能在页面上改的运营配置（同步时间、单价、周报推送）存在数据库的 settings 表里，见 prefs.py。
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ class Settings:
     public_url: str
     data_dir: Path
     secret_key: str
-    # 企业自建应用：飞书登录、通讯录、AI 用量接口都用它
+    # 企业自建应用：飞书登录、通讯录、AI 用量接口都用它。可以不填，在首次配置页面上填
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
     feishu_open_base: str = "https://open.feishu.cn"
@@ -71,14 +71,6 @@ class Settings:
     def callback_url(self) -> str:
         return f"{self.public_url}/auth/callback"
 
-    @property
-    def llm_ready(self) -> bool:
-        return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
-
-    @property
-    def aily_ready(self) -> bool:
-        return bool(self.aily_app_id and self.aily_app_secret)
-
     @classmethod
     def from_env(cls) -> "Settings":
         public_url = os.environ.get("AIUS_PUBLIC_URL", "").strip().rstrip("/")
@@ -93,8 +85,6 @@ class Settings:
             log.warning("开发模式：未设置 AIUS_SECRET_KEY，使用临时密钥，重启后登录态失效")
         app_id = os.environ.get("FEISHU_APP_ID", "").strip()
         app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
-        if not dev and not (app_id and app_secret):
-            raise RuntimeError("必须设置 FEISHU_APP_ID 和 FEISHU_APP_SECRET")
         return cls(
             public_url=public_url,
             data_dir=Path(os.environ.get("AIUS_DATA_DIR", "/data")),

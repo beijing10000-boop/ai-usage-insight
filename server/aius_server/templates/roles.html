@@ -32,7 +32,11 @@
         {% for a in admins %}
         <tr>
           <td><span class="cell-title">{{ a.name or "还没登录过" }}</span>{% if a.fixed %}<small class="mono">{{ a.key }}</small>{% endif %}</td>
-          <td>{% if a.fixed %}<span class="tag">固定（环境变量）</span>{% else %}页面添加{% if a.granted_by %}<small>{{ a.granted_by }} 添加</small>{% endif %}{% endif %}</td>
+          <td>
+            {% if a.fixed %}<span class="tag">固定（环境变量）</span>
+            {% elif a.granted_by == "首次配置" %}首次配置<small>完成首次配置后第一个登录的人</small>
+            {% else %}页面添加{% if a.granted_by %}<small>{{ a.granted_by }} 添加</small>{% endif %}{% endif %}
+          </td>
           <td class="nowrap">{{ a.granted_at|ts }}</td>
           <td>
             {% if not a.fixed %}
@@ -49,5 +53,37 @@
       </tbody>
     </table>
   </div>
+</section>
+
+<section class="panel" id="tokens">
+  <div class="section-head"><div><h2>全部访问令牌</h2><p>每个人在「接入管理」里生成的令牌。令牌能看到的数据和它的主人一样多；有人离职、或者怀疑令牌泄露时，在这里撤销（撤销后立刻失效）</p></div></div>
+  {% if tokens %}
+  <div class="toolbar"><input type="search" data-filter-input="token-table" placeholder="按姓名或用途筛选" aria-label="筛选令牌" /></div>
+  <div class="table-wrap">
+    <table id="token-table">
+      <thead><tr><th>主人</th><th>用途</th><th>生成时间</th><th>有效期至</th><th>最近使用</th><th></th></tr></thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr>
+          <td><span class="cell-title">{{ t.owner_name }}</span><small>{{ t.role }}{% if t.gone %} · <span class="tag warn">已不在通讯录里</span>{% endif %}</small></td>
+          <td>{{ t.label }}</td>
+          <td class="nowrap">{{ t.created_at|ts }}</td>
+          <td class="nowrap">{% if t.expired %}<span class="tag warn">已过期</span>{% elif t.expires_at %}{{ t.expires_at|ts }}{% else %}不过期{% endif %}</td>
+          <td class="nowrap">{{ t.last_used_at|ago("还没用过") }}</td>
+          <td>
+            <form method="post" action="/roles" class="inline" data-confirm="撤销 {{ t.owner_name }} 的令牌「{{ t.label }}」？" data-confirm-message="撤销后，用这个令牌的 AI 工具和脚本会立刻连不上。对方需要的话可以自己重新生成。" data-confirm-text="撤销" data-danger>
+              <input type="hidden" name="action" value="token_revoke" /><input type="hidden" name="token" value="{{ t.token_hash }}" />
+              <button type="submit" class="btn small danger">撤销</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        <tr data-empty hidden><td colspan="6" class="empty">没有符合筛选条件的令牌。</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有人生成过访问令牌。</p>
+  {% endif %}
 </section>
 {% endblock %}

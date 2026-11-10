@@ -104,7 +104,7 @@ class Access:
                     "name": self.directory.user_name(open_id),
                     "fixed": False,
                     "granted_at": r["granted_at"],
-                    "granted_by": self.directory.user_name(r["granted_by"]) if r["granted_by"] else "",
+                    "granted_by": "首次配置" if r["granted_by"] == "setup" else (self.directory.user_name(r["granted_by"]) if r["granted_by"] else ""),
                 }
             )
         return out

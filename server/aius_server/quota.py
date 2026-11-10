@@ -89,7 +89,20 @@ class Quotas:
 
     def summary(self, rows: list[dict]) -> dict:
         live = [r for r in rows if r["current"]]
-        allocated, used = sum(r["amount"] for r in live), sum(r["used"] for r in live)
+        # 合计只算「最外层」的额度：给上级部门分了额度、又给它的下级部门或成员单独分了的，下级那部分已经含在上级里，
+        # 再加一遍会把已分配和已使用都算多
+        depts = {r["target_id"] for r in live if r["dimension"] == "department"}
+
+        def covered(r: dict) -> bool:
+            if r["dimension"] == "department":
+                return any(d in depts for d in self.directory.chain(r["target_id"])[1:])
+            if r["dimension"] == "member":
+                member = self.directory.user(r["target_id"])
+                return bool(member) and any(d in depts for dept in member.dept_ids for d in self.directory.chain(dept))
+            return False
+
+        outer = [r for r in live if not covered(r)]
+        allocated, used = sum(r["amount"] for r in outer), sum(r["used"] for r in outer)
         return {
             "count": len(live),
             "allocated": round(allocated, 2),
