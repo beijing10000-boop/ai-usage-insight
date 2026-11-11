@@ -1,20 +1,87 @@
 {# 各页面共用的小组件。 #}
 
-{# 日期范围：一排筛选放在所有图表上面，先是预设（近 7 / 30 / 90 天），再是自定义起止日期。keep 是要带着走的其它参数。 #}
+{# 日期范围：一排筛选放在所有图表上面。先是预设（近 7 / 30 / 90 天、本月、上月），再是按月选、自定义起止日期。
+   keep 是要带着走的其它参数。飞书的 AI 额度按自然月发放，所以自然月单独有一组入口；按自然月看时环比和上个月的同一段比。 #}
+{% macro hidden_keep(keep) %}{% for k, v in keep.items() %}{% if v not in (none, "") %}<input type="hidden" name="{{ k }}" value="{{ v }}" />{% endif %}{% endfor %}{% endmacro %}
 {% macro range_bar(rng, path, keep={}, presets=(7, 30, 90)) %}
 {% if rng.error %}<p class="notice warn" role="alert">{{ rng.error }}</p>{% endif %}
-<form class="range-bar" method="get" action="{{ path }}">
-  <div class="segmented" role="group" aria-label="时间范围">
+<div class="range-bar">
+  <div class="segmented" role="group" aria-label="最近几天">
     {% for d in presets %}
     <a class="{{ 'active' if rng.preset == d }}" href="{{ url_with(path, days=d, **keep) }}"{% if rng.preset == d %} aria-current="true"{% endif %}>近 {{ d }} 天</a>
     {% endfor %}
   </div>
-  {% for k, v in keep.items() %}{% if v not in (none, "") %}<input type="hidden" name="{{ k }}" value="{{ v }}" />{% endif %}{% endfor %}
-  <label class="inline-field">从 <input type="date" name="start" value="{{ rng.start }}" required aria-label="开始日期" /></label>
-  <label class="inline-field">到 <input type="date" name="end" value="{{ rng.end }}" required aria-label="结束日期" /></label>
-  <button type="submit" class="btn">查看</button>
-  <span class="range-note">{{ rng.start }} ~ {{ rng.end }}，共 {{ rng.days }} 天</span>
-</form>
+  <div class="segmented" role="group" aria-label="自然月">
+    {% for key, name in (("this", "本月"), ("last", "上月")) %}
+    <a class="{{ 'active' if rng.month == key }}" href="{{ url_with(path, month=key, **keep) }}"{% if rng.month == key %} aria-current="true"{% endif %}>{{ name }}</a>
+    {% endfor %}
+  </div>
+  {% if rng.months %}
+  <form class="range-month" method="get" action="{{ path }}">
+    {{ hidden_keep(keep) }}
+    <label class="inline-field">按月
+      <select name="month" data-autosubmit aria-label="选择一个自然月">
+        {% if not rng.picked_month %}<option value="" selected>选择月份</option>{% endif %}
+        {% for m in rng.months %}<option value="{{ m }}"{{ " selected" if rng.picked_month == m }}>{{ m[:4] }} 年 {{ m[5:]|int }} 月</option>{% endfor %}
+      </select>
+    </label>
+    <noscript><button type="submit" class="btn">查看</button></noscript>
+  </form>
+  {% endif %}
+  <form class="range-dates" method="get" action="{{ path }}">
+    {{ hidden_keep(keep) }}
+    <label class="inline-field">从 <input type="date" name="start" value="{{ rng.start }}" required aria-label="开始日期" /></label>
+    <label class="inline-field">到 <input type="date" name="end" value="{{ rng.end }}" required aria-label="结束日期" /></label>
+    <button type="submit" class="btn">查看</button>
+  </form>
+  <span class="range-note">{% if rng.monthly %}{{ rng.label }}：{% endif %}{{ rng.start }} ~ {{ rng.end }}，共 {{ rng.days }} 天{% if rng.monthly %}，按自然月和{{ rng.prev_label }}比{% endif %}</span>
+</div>
+{% endmacro %}
+
+{# 趋势的汇总粒度：按日 / 按周 / 按月（按月是自然月，活跃人数按月去重）。params 是切换时要带着走的参数 #}
+{% macro granularity(path, by, params) %}
+<div class="segmented" role="group" aria-label="汇总粒度">
+  {% for key, name in (("day", "按日"), ("week", "按周"), ("month", "按月")) %}
+  <a class="{{ 'active' if by == key }}" href="{{ url_with(path, **dict(params, by=key if key != 'day' else '')) }}"{% if by == key %} aria-current="true"{% endif %}>{{ name }}</a>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{# 每人每月基础额度（自然月）：用完 / 即将用完的人数和名单。a 是 analytics.allowance() 的结果，没设置额度时是 none #}
+{% macro allowance_panel(a, more="", who="") %}
+<section class="panel" id="allowance">
+  <div class="section-head">
+    <div><h2>月度额度 · {{ a.label }}</h2><p>每人每月基础额度 {{ a.per_member|num }} 点，按自然月发放、每月 1 日重置，几个 AI 应用共用一份{{ who }}</p></div>
+    {% if more %}<a class="btn small" href="{{ more }}">全部</a>{% endif %}
+  </div>
+  <div class="stats compact">
+    {{ stat("已用完基础额度", a.used_up ~ " 人", "这个月用了 " ~ a.per_member|num ~ " 点及以上") }}
+    {{ stat("即将用完", a.near ~ " 人", "用到 90% 以上，还没用完") }}
+    {{ stat("超出基础额度的用量（点）", a.over_points|compact, "用完基础额度后接着用的部分，来自追加的额度", full=a.over_points) }}
+    {{ stat("这个月用过 AI 的人", a.active|num, "已用完的占 " ~ ((a.used_up / a.active * 100) if a.active else 0)|num(1) ~ "%") }}
+  </div>
+  {% set listed = a.members|selectattr("rate", "ge", 75)|list %}
+  {% if listed %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>姓名</th><th class="num">这个月已用（点）</th><th>占基础额度</th><th class="num">基础额度剩余</th><th>状态</th></tr></thead>
+      <tbody>
+        {% for m in listed %}
+        <tr>
+          <td><a class="cell-title" href="{{ url_with('/self-usage', member=m.id, month=a.month) }}">{{ m.name }}</a><small>{{ m.dept_path }}</small></td>
+          <td class="num">{{ m.amount|num }}</td>
+          <td><progress class="mini meter {{ m.state }}" max="100" value="{{ [m.rate, 100]|min }}" aria-hidden="true"></progress><small>{{ m.rate|num(1) }}%</small></td>
+          <td class="num">{{ m.remaining|num }}{% if m.over %}<small>超出 {{ m.over|num }}</small>{% endif %}</td>
+          <td><span class="status {{ m.state }}">{{ m.state_label }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">这个月还没有人用到基础额度的 75%。</p>
+  {% endif %}
+</section>
 {% endmacro %}
 
 {# 指标卡：标题、数值、一行说明。数值很大时写成「12.9 万」，完整数字在 title 里 #}
@@ -31,12 +98,22 @@
 {% if value is none %}<span class="muted" title="上一个周期没有可以比较的数据">—</span>{% else %}<span class="delta">{{ "▲" if value > 0 else ("▼" if value < 0 else "") }} {{ value|delta }}</span>{% endif %}
 {% endmacro %}
 
-{# 「比上一个周期」这张指标卡。x 是带 change / prev_total / comparable 的指标对象 #}
+{# 「比上一个周期 / 比上个月 / 比上月同期」这张指标卡。x 是带 change / prev_total / comparable / prev_label 的指标对象 #}
 {% macro change_stat(x) %}
-<div class="stat">
-  <div class="label">比上一个周期</div>
+<div class="stat" title="和 {{ x.prev_start }} ~ {{ x.prev_end }} 比">
+  <div class="label">比{{ x.prev_label }}</div>
   <div class="value small-value">{{ delta(x.change) }}</div>
-  <div class="hint">{% if x.comparable %}上一个周期 {{ x.prev_total|num }} 点{% else %}上一个周期的数据没有同步完整，不做比较{% endif %}</div>
+  <div class="hint">{% if x.comparable %}{{ x.prev_label }} {{ x.prev_total|num }} 点{% else %}{{ x.prev_label }}的数据没有同步完整，不做比较{% endif %}</div>
+</div>
+{% endmacro %}
+
+{# 一个人这个月的基础额度：已用 / 额度，剩余多少。a 是 analytics.allowance(member=...) 的结果 #}
+{% macro allowance_stat(a) %}
+{% set m = a.members[0] %}
+<div class="stat{{ ' attention' if m.rate >= 90 }}">
+  <div class="label">基础额度 · {{ a.label }}</div>
+  <div class="value small-value">{{ m.amount|num(0) }} / {{ a.per_member|num }} 点</div>
+  <div class="hint">{% if m.over %}已用完，超出 {{ m.over|num }} 点（追加的额度）{% elif m.rate >= 100 %}已用完{% else %}剩余 {{ m.remaining|num }} 点，已用 {{ m.rate|num(1) }}%{% endif %}</div>
 </div>
 {% endmacro %}
 

@@ -1,14 +1,16 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import range_bar, stat, delta, change_stat, chart, shares, paging %}
+{% from "_macros.html" import range_bar, stat, delta, change_stat, chart, shares, paging, granularity, allowance_stat %}
 {% set title = "我的用量" if mine else p.name ~ " 的用量" %}
 {% set section = "洞察" %}
+{% set unit = {"day": "每天", "week": "每周", "month": "每月"}[by] %}
+{% set bar_keep = dict(keep, by=by if by != "day" else "") %}
 
 {% block actions %}
 <a class="btn" href="{{ url_with('/self-usage/export.xlsx', **dict(rng.query, **keep)) }}">{{ icon("download") }}导出 Excel</a>
 {% endblock %}
 
 {% block content %}
-{{ range_bar(rng, "/self-usage", keep) }}
+{{ range_bar(rng, "/self-usage", bar_keep) }}
 
 {% if not mine %}<p class="notice">你正在看 <b>{{ p.name }}</b>（{{ p.dept_path }}）的用量。<a href="{{ url_with('/self-usage', **rng.query) }}">回到我的用量</a></p>{% endif %}
 
@@ -17,12 +19,16 @@
   {{ change_stat(p) }}
   {{ stat("使用次数", p.records|num, "每用一次 AI 功能记一次") }}
   {{ stat("活跃天数", p.active_days ~ " / " ~ p.days, "有用量的天数 / 总天数") }}
+  {% if allowance %}{{ allowance_stat(allowance) }}{% endif %}
 </div>
 
 <div class="grid2">
   <section class="panel">
-    <div class="section-head"><div><h2>每天的用量</h2><p>{{ rng.label }}，单位：点</p></div></div>
-    {{ chart(usage, "每天的 AI 用量，合计 " ~ p.total|num ~ " 点", "这段时间没有用量记录。") }}
+    <div class="section-head">
+      <div><h2>{{ unit }}的用量</h2><p>{{ rng.label }}，单位：点{{ "；按月是自然月" if by == "month" }}</p></div>
+      {{ granularity("/self-usage", by, dict(rng.query, **keep)) }}
+    </div>
+    {{ chart(usage, unit ~ "的 AI 用量，合计 " ~ p.total|num ~ " 点", "这段时间没有用量记录。", when="时间" if by != "day" else "日期") }}
   </section>
 
   <section class="panel">
@@ -86,7 +92,7 @@
       </tbody>
     </table>
   </div>
-  {{ paging(pager, "/self-usage", dict(rng.query, **keep)) }}
+  {{ paging(pager, "/self-usage", dict(rng.query, **bar_keep)) }}
   {% else %}
   <p class="empty">这段时间没有使用记录。{{ "用过飞书里的 AI 功能（知识问答、智能纪要、豆包工作等）之后，同步完成就会出现在这里。" if mine }}</p>
   {% endif %}

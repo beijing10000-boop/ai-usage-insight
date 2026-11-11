@@ -4,7 +4,8 @@
 - 总用量 = 人员用量日志 + 应用用量日志的消耗点数之和。
 - 限定了部门、某个人或豆包工作时，只算人员用量日志（应用不属于部门）。
 - 部门用量按部门树向上汇总：一个部门的用量 = 它自己和所有下级部门成员的用量。
-- 环比 = 和紧挨着的上一个同样长度的时间段相比。
+- 环比 = 和紧挨着的上一个同样长度的时间段相比；按自然月看的时候（从某月 1 日开始、不跨月），和上个月的同一段相比：
+  本月 1–10 日比上月 1–10 日，整月比整月。飞书的 AI 额度按自然月发放、每月 1 日重置，月和月比才有意义。
 """
 
 from __future__ import annotations
@@ -37,6 +38,24 @@ def r2(value: float) -> float:
     return round(value or 0, 2)
 
 
+def month_end(d: date) -> date:
+    return (d.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+
+
+def month_aligned(start: str, end: str) -> bool:
+    """从某月 1 日开始、不跨月的范围（整月，或者月初到某一天）。"""
+    try:
+        first, last = date.fromisoformat(start), date.fromisoformat(end)
+    except ValueError:
+        return False
+    return first.day == 1 and first <= last and (first.year, first.month) == (last.year, last.month)
+
+
+def month_name(month: str) -> str:
+    """2026-11 -> 2026 年 11 月"""
+    return f"{month[:4]} 年 {int(month[5:7])} 月"
+
+
 @dataclass(frozen=True)
 class Filter:
     start: str
@@ -44,6 +63,7 @@ class Filter:
     depts: frozenset[str] | None = None  # 只看这些部门（人员日志上的部门）
     member: str | None = None  # 只看这个人
     doubao: bool = False  # 只看豆包工作
+    monthly: bool = False  # 按自然月看：环比和上个月的同一段比（只在范围从 1 日开始、不跨月时生效）
 
     @property
     def days(self) -> int:
@@ -53,8 +73,29 @@ class Filter:
     def members_only(self) -> bool:
         return self.depts is not None or self.member is not None or self.doubao
 
+    @property
+    def by_month(self) -> bool:
+        return self.monthly and month_aligned(self.start, self.end)
+
+    @property
+    def full_month(self) -> bool:
+        return self.by_month and date.fromisoformat(self.end) == month_end(date.fromisoformat(self.end))
+
+    @property
+    def prev_label(self) -> str:
+        """环比和谁比，页面上写成「比上个月」「比上月同期」「比上一个周期」。"""
+        if not self.by_month:
+            return "上一个周期"
+        return "上个月" if self.full_month else "上月同期"
+
     def previous(self) -> "Filter":
-        first = date.fromisoformat(self.start)
+        first, last = date.fromisoformat(self.start), date.fromisoformat(self.end)
+        if self.by_month:
+            # 上个月的同一段：1 日到同一天（上个月没有这一天就到月底）；整月就是上个月整月
+            prev_last = first - timedelta(days=1)
+            prev_first = prev_last.replace(day=1)
+            end = prev_last if self.full_month else min(prev_last, prev_first + timedelta(days=last.day - 1))
+            return replace(self, start=prev_first.isoformat(), end=end.isoformat())
         return replace(self, start=(first - timedelta(days=self.days)).isoformat(), end=(first - timedelta(days=1)).isoformat())
 
     def dates(self) -> list[str]:
@@ -173,7 +214,7 @@ class Analytics:
         return Slice(self.db, f)
 
     def previous(self, f: Filter) -> Slice | None:
-        """上一个同样长度的周期，用来算环比。上一个周期里只要有一天没同步成功过（还没同步到那么早、中间服务停过、
+        """上一个周期（同样长度的上一段；按自然月看时是上个月的同一段），用来算环比。上一个周期里只要有一天没同步成功过（还没同步到那么早、中间服务停过、
         那天同步失败了），就返回 None：拿残缺的数据去比，会算出吓人的「增长」。
         「同步成功过」看执行记录里那天的人员用量日志——不能看那天有没有数据，周末本来就可能没人用。"""
         before = f.previous()
@@ -224,10 +265,21 @@ class Analytics:
             "headcount": self._headcount(f),
         }
         out["coverage"] = min(100.0, pct(out["active_members"], out["headcount"])) if out["headcount"] else None
-        out["comparable"] = prev is not None
-        out["prev_total"] = r2(prev.total) if prev else None
-        out["change"] = change(cur.total, prev.total) if prev else None
+        out.update(self.compared(f, prev, cur.total, prev.total if prev else 0.0))
         return out
+
+    @staticmethod
+    def compared(f: Filter, prev: Slice | None, now: float, before: float) -> dict:
+        """环比那几项：和谁比（上一个周期 / 上个月 / 上月同期）、比的是哪几天、能不能比、变化多少。"""
+        p = f.previous()
+        return {
+            "prev_label": f.prev_label,
+            "prev_start": p.start,
+            "prev_end": p.end,
+            "comparable": prev is not None,
+            "prev_total": r2(before) if prev else None,
+            "change": change(now, before) if prev else None,
+        }
 
     def daily(self, cur: Slice) -> list[dict]:
         out = []
@@ -248,24 +300,44 @@ class Analytics:
         return out
 
     def periods(self, cur: Slice, granularity: str) -> list[dict]:
-        """按日 / 周 / 月汇总的趋势（豆包运营页用）。活跃人数是这段时间里去重后的人数。"""
+        """按日 / 周（周一到周日）/ 自然月汇总的趋势。活跃人数是这一周 / 这个月里去重后的人数，
+        所以按月看时的人均用量就是「每个用过 AI 的人这个月用了多少」，可以直接和每人每月的额度对照。
+        范围两头不完整的周 / 月照样画，提示里写明只算了哪几天；没有用量的周 / 月是 0。"""
         if granularity not in ("week", "month"):
             return self.daily(cur)
-        buckets: dict[str, dict] = {}
+        week = granularity == "week"
+        first, last = date.fromisoformat(cur.f.start), date.fromisoformat(cur.f.end)
+
+        def head(d: date) -> date:
+            return d - timedelta(days=d.weekday()) if week else d.replace(day=1)
+
+        def tail(d: date) -> date:
+            return d + timedelta(days=6) if week else month_end(d)
+
+        buckets: dict[date, dict] = {}
+        b = head(first)
+        while b <= last:
+            buckets[b] = {"member": 0.0, "app": 0.0, "users": set()}
+            b = tail(b) + timedelta(days=1)
         for r in cur.rows:
-            d = date.fromisoformat(r["usage_date"])
-            key = (d - timedelta(days=d.weekday())).isoformat() if granularity == "week" else r["usage_date"][:7]
-            b = buckets.setdefault(key, {"member": 0.0, "app": 0.0, "users": set()})
-            b[r["subject"]] += r["amount"]
+            bucket = buckets[head(date.fromisoformat(r["usage_date"]))]
+            bucket[r["subject"]] += r["amount"]
             if r["subject"] == "member":
-                b["users"].add(r["entity_id"])
+                bucket["users"].add(r["entity_id"])
+        across_years = first.year != last.year
         out = []
-        for key in sorted(buckets):
-            b = buckets[key]
-            users = len(b["users"])
-            label = f"{int(key[5:7])}/{int(key[8:10])} 周" if granularity == "week" else f"{int(key[5:7])} 月"
-            out.append({"date": key, "label": label, "total": r2(b["member"] + b["app"]), "member": r2(b["member"]), "app": r2(b["app"]),
-                        "users": users, "per_capita": r2(b["member"] / users) if users else 0.0})  # fmt: skip
+        for b, v in buckets.items():
+            lo, hi = max(b, first), min(tail(b), last)
+            partial = (lo, hi) != (b, tail(b))
+            if week:
+                label, title = f"{b.month}/{b.day} 周", f"{lo.isoformat()} ~ {hi.isoformat()}"
+            else:
+                label = f"{b.year}-{b.month:02d}" if across_years else f"{b.month} 月"
+                title = month_name(b.isoformat()) + (f"（只算了 {lo.month}/{lo.day} ~ {hi.month}/{hi.day}）" if partial else "")
+            users = len(v["users"])
+            out.append({"date": b.isoformat() if week else b.isoformat()[:7], "label": label, "title": title, "start": lo.isoformat(), "end": hi.isoformat(),
+                        "days": (hi - lo).days + 1, "partial": partial, "total": r2(v["member"] + v["app"]), "member": r2(v["member"]), "app": r2(v["app"]),
+                        "users": users, "per_capita": r2(v["member"] / users) if users else 0.0})  # fmt: skip
         return out
 
     # ---------- 排行 ----------
@@ -485,7 +557,8 @@ class Analytics:
         """「本期解读」：一句话说清用了多少、涨了还是跌了、主要来自哪里、有没有异常。"""
         if not k["total"]:
             return "这段时间还没有用量数据。完成一次同步之后，这里会给出用量分布、增长来源和异常提醒。"
-        trend = "上一个周期没有完整的数据可比" if k["change"] is None else f"比上一个周期{'增长' if k['change'] >= 0 else '下降'} {abs(k['change'])}%"
+        prev = k.get("prev_label", "上一个周期")
+        trend = f"{prev}没有完整的数据可比" if k["change"] is None else f"比{prev}{'增长' if k['change'] >= 0 else '下降'} {abs(k['change'])}%"
         depts = [d for d in depts if d["id"] != DIRECT]  # 「直属成员」不是一个部门，不能说「用量最高的部门是直属成员」
         sources = [f"{kind}是「{rows[0]['name']}」" for kind, rows in (("部门", depts), ("应用", apps), ("场景", scenes)) if rows]
         where = f"；用量最高的{'，'.join(sources)}" if sources else ""
@@ -575,13 +648,13 @@ class Analytics:
         return out, total
 
     # ---------- 个人用量 ----------
-    def member_profile(self, open_id: str, start: str, end: str, dept_visible: bool = False) -> dict:
+    def member_profile(self, open_id: str, start: str, end: str, dept_visible: bool = False, monthly: bool = False) -> dict:
         """一个人的用量：指标、趋势、场景分布、额度类型，以及他所在部门的整体情况（不含其他人的个人数据）。
 
         dept_visible：看的人本来就有权看这个部门的成员用量（运营管理员、部门负责人）。没有这个权限的人，
         部门里除了他自己之外用 AI 的人少于 MIN_GROUP 个时，不给部门的点数和场景——两三个人的「部门合计」
         减掉自己的，就是同事的个人用量。"""
-        f = Filter(start, end, member=open_id)
+        f = Filter(start, end, member=open_id, monthly=monthly)
         cur, prev = self.slice(f), self.previous(f)
         me = cur.by_member.get(open_id, {"amount": 0.0, "records": 0, "days": set(), "dept": "", "last": ""})
         dept_id = me["dept"] or self.directory.user_dept(open_id)
@@ -598,9 +671,7 @@ class Analytics:
             "records": me["records"],
             "active_days": len(me["days"]),
             "days": f.days,
-            "comparable": prev is not None,
-            "change": change(me["amount"], prev.member_total) if prev else None,
-            "prev_total": r2(prev.member_total) if prev else None,
+            **self.compared(f, prev, me["amount"], prev.member_total if prev else 0.0),
             "daily": self.daily(cur),
             "scenarios": self.scenarios(f, level=0, limit=10),
             "products": self.scenarios(f, level=1, limit=8),
@@ -626,6 +697,51 @@ class Analytics:
                 )
         return out
 
+    # ---------- 每人每月额度（自然月） ----------
+    def month_span(self, month: str) -> tuple[str, str, bool]:
+        """一个自然月里可以统计的那一段：(1 日, 月底或最近一个有数据的日子, 是不是整月都有了)。"""
+        first = date.fromisoformat(month + "-01")
+        last = month_end(first)
+        latest = date.fromisoformat(self.latest_date() or (today() - timedelta(days=1)).isoformat())
+        end = max(first, min(last, latest))
+        return first.isoformat(), end.isoformat(), end == last
+
+    def allowance(self, month: str, depts: frozenset[str] | None = None, member: str | None = None, limit: int = 10) -> dict | None:
+        """每人每月基础额度的使用情况（month = "2026-11"）。飞书的个人 AI 额度按自然月发放、每月 1 日重置，
+        几个 AI 应用共用一份；这里拿这个月每个人的人员用量合计去和它比。没有设置基础额度时返回 None。
+
+        用完基础额度之后还能用，是因为追加过额度：超出基础额度的部分（over_points）就是这个月追加额度里用掉的点数。
+        平台拿不到每个人追加了多少，所以「剩余」只按基础额度算。"""
+        per = self.config.monthly_allowance
+        if not per:
+            return None
+        start, end, complete = self.month_span(month)
+        cur = self.slice(Filter(start, end, depts=depts, member=member))
+        used = sorted(((oid, m["amount"]) for oid, m in cur.by_member.items()), key=lambda x: -x[1])
+        if member and not used:
+            used = [(member, 0.0)]
+        rows = []
+        for open_id, amount in used[:limit] if limit else used:
+            rate = pct(amount, per)
+            dept = cur.by_member.get(open_id, {}).get("dept") or self.directory.user_dept(open_id)
+            rows.append({"id": open_id, "name": self.directory.user_name(open_id), "dept_path": self.directory.dept_path(dept),
+                         "amount": r2(amount), "rate": rate, "remaining": r2(max(0.0, per - amount)), "over": r2(max(0.0, amount - per)),
+                         "state": "failed" if rate >= 100 else ("warn" if rate >= 90 else ("pending" if rate >= 75 else "ok")),
+                         "state_label": "已用完" if rate >= 100 else ("即将用完" if rate >= 90 else ("偏高" if rate >= 75 else "正常"))})  # fmt: skip
+        return {
+            "month": month,
+            "label": month_name(month) + ("" if complete else f"（截至 {int(end[5:7])}/{int(end[8:10])}）"),
+            "start": start,
+            "end": end,
+            "complete": complete,
+            "per_member": per,
+            "active": cur.active_members,
+            "used_up": sum(1 for _o, a in used if a >= per),
+            "near": sum(1 for _o, a in used if per * 0.9 <= a < per),
+            "over_points": r2(sum(a - per for _o, a in used if a > per)),
+            "members": rows,
+        }
+
     def top_scenario_by_member(self, f: Filter) -> dict[str, str]:
         """每个人用得最多的场景（成员表里的「主要场景」一列）。"""
         where, params = f.where()
@@ -638,17 +754,19 @@ class Analytics:
         return {k: v[1] for k, v in best.items()}
 
     # ---------- 页面级汇总 ----------
-    def overview(self, f: Filter, parent: str = ROOT) -> dict:
-        """驾驶舱 / 部门运营 / 豆包运营页要的一整套数据。"""
+    def overview(self, f: Filter, parent: str = ROOT, granularity: str = "day") -> dict:
+        """驾驶舱 / 部门运营 / 豆包运营页要的一整套数据。trend 是按 granularity（日 / 周 / 月）汇总的趋势。"""
         cur, prev = self.slice(f), self.previous(f)
         k = self.kpis(cur, prev)
         depts = self.rank_depts(cur, prev, parent)
         apps = [] if f.members_only else self.rank_apps(cur, prev)
         scenes = self.scenarios(f, level=1)
         anomalies = [] if f.member else self.anomalies(cur, prev, parent)
+        daily = self.daily(cur)
         return {
             "kpis": k,
-            "daily": self.daily(cur),
+            "daily": daily,
+            "trend": daily if granularity not in ("week", "month") else self.periods(cur, granularity),
             "depts": depts,
             "members": self.rank_members(cur, prev),
             "apps": apps,

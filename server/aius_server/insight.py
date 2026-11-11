@@ -15,6 +15,7 @@ import httpx
 from .analytics import Analytics, Filter
 from .config import Settings
 from .feishu import ROOT
+from .sync import today
 
 log = logging.getLogger("aius")
 
@@ -85,6 +86,7 @@ class Insight:
                 "折算费用（元）": k["cost"],
                 "人员用量": k["member_total"],
                 "应用用量": k["app_total"],
+                "对比的周期": f"{k['prev_label']}（{k['prev_start']} 至 {k['prev_end']}）",
                 "上一周期总用量": k.get("prev_total"),
                 "环比（%）": k.get("change"),
                 "活跃人数": k["active_members"],
@@ -107,13 +109,29 @@ class Insight:
             out["人员排行"] = top(o["members"], ("name", "dept", "amount", "share", "active_days", "change"))
         if o["apps"]:
             out["应用排行"] = top(o["apps"], ("name", "type", "amount", "share", "change"))
+        # 每人每月基础额度（设置了才有）：按自然月看的就是那个月，其他时候是本月
+        a = self.analytics.allowance(f.start[:7] if f.by_month else today().isoformat()[:7], depts=f.depts, member=f.member, limit=8)
+        if a:
+            out["月度额度"] = {
+                "月份": a["label"],
+                "说明": "飞书的个人 AI 额度按自然月发放、每月 1 日重置；剩余只按基础额度算，不含追加的额度",
+                "每人每月基础额度（点）": a["per_member"],
+                "已用完的人数": a["used_up"],
+                "即将用完的人数": a["near"],
+                "超出基础额度的用量（点）": a["over_points"],
+                "用量最高的人" if not f.member else "本人": top(a["members"], ("name", "amount", "rate", "remaining", "over")),
+            }
         return out
 
     def fallback(self, data: dict, reason: str) -> str:
         m = data["指标"]
         lines = [f"**{data['时间范围']}**，{data['数据范围']}一共用了 **{m['总用量（点）']:,.0f} 点**，折算 **¥{m['折算费用（元）']:,.2f}**。"]
         if m["环比（%）"] is not None:
-            lines.append(f"比上一个周期{'增长' if m['环比（%）'] >= 0 else '下降'} **{abs(m['环比（%）'])}%**。")
+            prev = m["对比的周期"].partition("（")[0]
+            lines.append(f"比{prev}{'增长' if m['环比（%）'] >= 0 else '下降'} **{abs(m['环比（%）'])}%**。")
+        if data.get("月度额度"):
+            a = data["月度额度"]
+            lines.append(f"{a['月份']}：每人每月基础额度 {a['每人每月基础额度（点）']:,.0f} 点，已用完 {a['已用完的人数']} 人，即将用完 {a['即将用完的人数']} 人。")
         for title, key in (("用量最高的部门", "部门排行"), ("用量最高的场景", "场景（一级）"), ("用量最高的应用", "应用排行")):
             rows = data.get(key) or []
             if rows:

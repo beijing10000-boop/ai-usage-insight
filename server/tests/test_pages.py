@@ -208,7 +208,8 @@ def test_rollup_selection_is_saved_per_user(env):
 
 def test_exports_are_real_xlsx_files(env):
     c = env.browser("admin@example.com")
-    for path, sheet_count in ((f"/dashboard/export.xlsx?start={D1}&end={D1}", 6), (f"/data/export.xlsx?start={D2}&end={D1}", 1), ("/data/export.xlsx?tab=details", 1)):
+    # 驾驶舱：指标、每日趋势、每月汇总、部门、人员、应用、场景（设置了每人每月额度时再加一张月度额度）
+    for path, sheet_count in ((f"/dashboard/export.xlsx?start={D1}&end={D1}", 7), (f"/data/export.xlsx?start={D2}&end={D1}", 1), ("/data/export.xlsx?tab=details", 1)):
         r = c.get(path)
         assert r.status_code == 200 and r.headers["content-type"].startswith("application/vnd.openxmlformats")
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:

@@ -16,10 +16,10 @@ from fastapi.responses import JSONResponse
 
 from . import labels
 from .access import Viewer
-from .analytics import Filter
+from .analytics import Filter, month_aligned
 from .core import Ctx
 from .feishu import ROOT
-from .sync import MAX_DAYS
+from .sync import MAX_DAYS, today
 
 # (路径, 谁能用, 说明)：接入管理页面按这个列表生成接口文档
 ENDPOINTS = [
@@ -98,8 +98,13 @@ class Api:
         if not self.c.access.can_see_dept(v, dept_id):
             raise ApiError(403, "这个部门不在你负责的范围内")
 
+    @staticmethod
+    def window(start: str, end: str, **kw) -> Filter:
+        """接口里的时间范围：start 是某月 1 日、end 在同一个月时按自然月看，环比和上个月的同一段比。"""
+        return Filter(start, end, monthly=month_aligned(start, end), **kw)
+
     def dept_filter(self, dept_id: str, start: str, end: str) -> Filter:
-        return Filter(start, end, depts=frozenset(self.c.directory.subtree(dept_id)))
+        return self.window(start, end, depts=frozenset(self.c.directory.subtree(dept_id)))
 
     # ---------- self ----------
     def me(self, v: Viewer) -> dict:
@@ -116,15 +121,23 @@ class Api:
         }
 
     def my_summary(self, v: Viewer, start: str, end: str) -> dict:
-        p = self.an.member_profile(v.open_id, start, end)
-        return {k: p[k] for k in ("name", "dept_path", "start", "end", "days", "total", "cost", "records", "active_days", "prev_total", "change")}
+        p = self.an.member_profile(v.open_id, start, end, monthly=month_aligned(start, end))
+        keys = ("name", "dept_path", "start", "end", "days", "total", "cost", "records", "active_days", "prev_label", "prev_start", "prev_end", "prev_total", "change")
+        out = {k: p[k] for k in keys}
+        # 本月（按自然月查的就是那个月）的基础额度用了多少、还剩多少；没有设置每人每月额度时是 null
+        a = self.an.allowance(start[:7] if month_aligned(start, end) else today().isoformat()[:7], member=v.open_id, limit=1)
+        out["month_allowance"] = (
+            {"month": a["month"], "start": a["start"], "end": a["end"], "per_member": a["per_member"], **{k: a["members"][0][k] for k in ("amount", "rate", "remaining", "over")}}
+            if a else None
+        )  # fmt: skip
+        return out
 
     def my_trend(self, v: Viewer, start: str, end: str) -> dict:
-        cur = self.an.slice(Filter(start, end, member=v.open_id))
+        cur = self.an.slice(self.window(start, end, member=v.open_id))
         return {**_span(start, end), "daily": [{"date": d["date"], "amount": d["total"]} for d in self.an.daily(cur)]}
 
     def my_scenarios(self, v: Viewer, start: str, end: str) -> dict:
-        f = Filter(start, end, member=v.open_id)
+        f = self.window(start, end, member=v.open_id)
         return {
             **_span(start, end),
             "products": self.an.scenarios(f, level=1, limit=None),
@@ -134,7 +147,7 @@ class Api:
 
     def my_logs(self, v: Viewer, start: str, end: str, page: int = 1, size: int = 50) -> dict:
         limit, offset = self.paging(page, size)
-        rows, total, amount = self.an.logs(Filter(start, end, member=v.open_id), limit=limit, offset=offset)
+        rows, total, amount = self.an.logs(self.window(start, end, member=v.open_id), limit=limit, offset=offset)
         return {**_span(start, end), "total": total, "amount": amount, "page": page, "size": size, "items": [_log(r) for r in rows]}
 
     def my_details(self, v: Viewer, start: str, end: str, page: int = 1, size: int = 50) -> dict:
@@ -187,16 +200,16 @@ class Api:
     # ---------- admin ----------
     def overview(self, v: Viewer, start: str, end: str) -> dict:
         self.admin(v)
-        o = self.an.overview(Filter(start, end))
+        o = self.an.overview(self.window(start, end))
         return {"kpis": o["kpis"], "narrative": o["narrative"], "anomalies": [_anomaly(a) for a in o["anomalies"]]}
 
     def trend(self, v: Viewer, start: str, end: str) -> dict:
         self.admin(v)
-        return {**_span(start, end), "daily": self.an.daily(self.an.slice(Filter(start, end)))}
+        return {**_span(start, end), "daily": self.an.daily(self.an.slice(self.window(start, end)))}
 
     def ranking(self, v: Viewer, dimension: str, start: str, end: str, limit: int = 20) -> dict:
         self.admin(v)
-        f = Filter(start, end)
+        f = self.window(start, end)
         limit = max(1, min(limit, 500))
         if dimension == "scenario":
             items = self.an.scenarios(f, level=0, limit=limit)
@@ -214,12 +227,12 @@ class Api:
 
     def anomalies(self, v: Viewer, start: str, end: str) -> dict:
         self.admin(v)
-        f = Filter(start, end)
+        f = self.window(start, end)
         return {**_span(start, end), "items": [_anomaly(a) for a in self.an.anomalies(self.an.slice(f), self.an.previous(f))]}
 
     def breakdown(self, v: Viewer, by: str, start: str, end: str) -> dict:
         self.admin(v)
-        f = Filter(start, end)
+        f = self.window(start, end)
         if by == "feature":
             items = self.an.split(f, "feature_key")
         elif by == "usage_type":
@@ -235,12 +248,12 @@ class Api:
         parent = parent or ROOT
         if parent != ROOT and not self.c.directory.dept(parent):
             raise ApiError(404, "没有这个部门")
-        f = Filter(start, end) if parent == ROOT else self.dept_filter(parent, start, end)
+        f = self.window(start, end) if parent == ROOT else self.dept_filter(parent, start, end)
         return {**_span(start, end), "parent": parent, "items": self.an.rank_depts(self.an.slice(f), self.an.previous(f), parent)}
 
     def doubao(self, v: Viewer, start: str, end: str) -> dict:
         self.admin(v)
-        f = Filter(start, end, doubao=True)
+        f = self.window(start, end, doubao=True)
         cur, prev = self.an.slice(f), self.an.previous(f)
         k = self.an.kpis(cur, prev)
         return {
@@ -256,7 +269,7 @@ class Api:
         limit, offset = self.paging(page, size)
         if dept and not self.c.directory.dept(dept):
             raise ApiError(404, "没有这个部门")
-        f = Filter(start, end, member=member or None, depts=frozenset(self.c.directory.subtree(dept)) if dept else None)
+        f = self.window(start, end, member=member or None, depts=frozenset(self.c.directory.subtree(dept)) if dept else None)
         rows, total, amount = self.an.logs(f, subject=subject, query=q, limit=limit, offset=offset)
         return {**_span(start, end), "total": total, "amount": amount, "page": page, "size": size, "items": [_log(r) for r in rows]}
 

@@ -82,6 +82,25 @@ a.stat:hover {
   font-size: 12px;
   color: var(--text-3);
 }
+/* 范围栏里的「按月」和起止日期各是一个表单，排在同一行 */
+.range-month,
+.range-dates {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+}
+.range-month select {
+  width: auto;
+  min-width: 140px;
+}
+.allowance-setting .add-row {
+  margin: 0;
+}
+.allowance-setting .range-month {
+  margin-top: 12px;
+}
 
 /* 部门运营的页头：当前部门 + 切换部门 */
 .panel.dept-head {

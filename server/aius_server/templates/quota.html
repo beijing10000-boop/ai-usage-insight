@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import stat %}
+{% from "_macros.html" import stat, allowance_panel %}
 {% set title = "额度分配" %}
 {% set section = "运营" %}
 
@@ -11,6 +11,31 @@
 <div class="page-intro">
   <p>给部门、人员或应用在一个周期里分配点数，平台按同步到的用量日志算出已用、剩余和使用率。部门的已用量包含它的下级部门。这里只做对账和提醒，不会限制飞书里的实际使用。</p>
 </div>
+
+<section class="panel allowance-setting">
+  <div class="section-head">
+    <div><h2>每人每月基础额度</h2><p>飞书的个人 AI 额度按自然月发放、每月 1 日重置，几个 AI 应用共用一份。填上之后，驾驶舱、部门运营、我的用量里会按自然月显示每个人用了多少、还剩多少（只按基础额度算，平台拿不到每个人追加了多少）。留空就不显示。</p></div>
+  </div>
+  <form method="post" action="/quota" class="add-row">
+    <input type="hidden" name="action" value="allowance" />
+    <label class="inline-field" for="per-member">每人每月</label>
+    <input id="per-member" name="per_member" type="number" min="0" step="any" value="{{ '%g'|format(per_member) if per_member else '' }}" placeholder="例如 2000" />
+    <span class="inline-field">点</span>
+    <button type="submit" class="btn">保存</button>
+  </form>
+  {% if allowance %}
+  <form method="get" action="/quota" class="range-month">
+    <label class="inline-field">看哪个月
+      <select name="month" data-autosubmit aria-label="选择一个自然月">
+        {% for m in rng.months %}<option value="{{ m }}"{{ " selected" if allowance.month == m }}>{{ m[:4] }} 年 {{ m[5:]|int }} 月</option>{% endfor %}
+      </select>
+    </label>
+    <noscript><button type="submit" class="btn">查看</button></noscript>
+  </form>
+  {% endif %}
+</section>
+
+{% if allowance %}{{ allowance_panel(allowance) }}{% endif %}
 
 <div class="stats">
   {{ stat("当前生效", summary.count, "周期包含今天、状态为启用的额度") }}

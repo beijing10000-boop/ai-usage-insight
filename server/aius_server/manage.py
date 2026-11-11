@@ -103,19 +103,29 @@ def register(app: FastAPI, c: Ctx) -> None:
         rows = c.quotas.list()
         month = today().replace(day=1)
         month_end = (month.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        # 每人每月基础额度：默认看本月，?month=2026-10 看别的月
+        rng = c.pick_range(request)
         return c.page(
             "quota.html", viewer, "quota", request, rows=rows, summary=c.quotas.summary(rows), dimensions=DIMENSIONS,
             editing=c.quotas.get(edit) if edit else None, default_start=month.isoformat(), default_end=month_end.isoformat(), price=c.config.point_price,
+            per_member=c.config.monthly_allowance, allowance=c.analytics.allowance(c.allowance_month(rng), limit=200), rng=rng,
         )  # fmt: skip
 
     @app.post("/quota")
     def quota_post(
         request: Request, action: str = Form(...), id: int = Form(0), dimension: str = Form("department"), target: str = Form(""),
-        amount: str = Form(""), period_start: str = Form(""), period_end: str = Form(""), note: str = Form(""),
+        amount: str = Form(""), period_start: str = Form(""), period_end: str = Form(""), note: str = Form(""), per_member: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
             return bad
+        if action == "allowance":
+            try:
+                saved = c.config.save("allowance", {"per_member": per_member}, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, "每人每月额度没有保存", str(e), ("回到额度分配", "/quota"), "quota")
+            c.db.audit(viewer.open_id, "config", f"每人每月基础额度：{saved['per_member'] or '不设置'}")
+            return c.done("/quota#allowance", "allowance_saved")
         if action == "delete":
             c.quotas.delete(id)
             c.db.audit(viewer.open_id, "quota", f"删除额度记录 #{id}")

@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import range_bar, stat, delta, change_stat, shares %}
+{% from "_macros.html" import range_bar, stat, delta, change_stat, shares, allowance_stat %}
 {% set title = "AI 门户" %}
 {% set section = "洞察" %}
 
@@ -37,6 +37,12 @@
   {{ stat("人均用量（点）", k.per_capita|compact, "按活跃人数平均") }}
   {% endif %}
   {{ change_stat(k) }}
+  {% if allowance and personal %}
+  {{ allowance_stat(allowance) }}
+  {% elif allowance %}
+  {{ stat("已用完基础额度", allowance.used_up ~ " 人", allowance.label ~ "，每人每月 " ~ allowance.per_member|num ~ " 点；即将用完 " ~ allowance.near ~ " 人",
+          href=(url_with("/dashboard", month=allowance.month) ~ "#allowance") if shell.viewer.is_admin else (url_with("/dept-ops", month=allowance.month) ~ "#allowance")) }}
+  {% endif %}
 </div>
 
 <div class="grid2">

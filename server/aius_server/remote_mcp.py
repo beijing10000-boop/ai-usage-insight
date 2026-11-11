@@ -15,6 +15,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__
 from .access import Viewer
+from .analytics import month_aligned
 from .core import Ctx
 from .openapi import Api, ApiError
 
@@ -27,7 +28,10 @@ INSTRUCTIONS = """查询公司的飞书 AI 用量数据（点数、折算费用�
 不确定身份时先调 aius_whoami。工具报「只有运营管理员能用」时，如实告诉用户他没有这个权限，不要换别的方式去凑数据。
 
 时间范围：默认是最近 30 天（到最近一个有数据的日子为止）；可以用 days 指定天数，或者用 start、end（YYYY-MM-DD）指定起止日期。
-用量的单位是「点」；cost 是按平台设置的单价折算的费用（元）；change 是和上一个同样长度的时间段相比的百分比。
+飞书的 AI 额度按自然月发放、每月 1 日重置。用户问「本月」「上个月」「10 月」时，用 start=那个月 1 日、end=那个月最后一天（本月就到今天）：
+这样的范围按自然月算，change 是和上个月同一段（整月比整月，本月 1–10 日比上月 1–10 日）相比，prev_label / prev_start / prev_end 写明比的是哪几天。
+其他范围的 change 是和上一个同样长度的时间段相比的百分比。用量的单位是「点」；cost 是按平台设置的单价折算的费用（元）。
+aius_my_summary 的 month_allowance 是这个人这个月的基础额度用了多少、还剩多少（平台没设置每人每月额度时是 null；剩余不含追加的额度）。
 数据由后台定时从飞书同步，aius_whoami 返回的 data_latest_date 是数据截至的日期；用户问到这天之后的情况时要说明数据还没同步到。"""
 
 
@@ -239,7 +243,7 @@ def build_remote_mcp(c: Ctx) -> tuple[BearerGate, MCPServer]:
                 raise ToolError("question 不能为空")
             if not c.may_ask(viewer.open_id):
                 raise ToolError("问得太快了，稍等几秒再问")
-            sc = c.scope(viewer, first, last)
+            sc = c.scope(viewer, first, last, month_aligned(first, last))
             result = c.insight.ask(question, sc.filter, sc.label, sc.parent)
             c.db.audit(viewer.open_id, "insight_ask", question[:200], via="mcp")
             return {"answer": result["answer"], "by_model": result["model"], "scope": sc.label, "start": first, "end": last}

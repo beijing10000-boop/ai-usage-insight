@@ -59,25 +59,34 @@ def small_int(raw: str | None) -> int | None:
     return int(raw) if raw and raw.isascii() and raw.isdigit() and len(raw) <= 2 else None
 
 
+GRANULARITY = ("day", "week", "month")
+
+
+def granularity(request: Request) -> str:
+    by = request.query_params.get("by", "day")
+    return by if by in GRANULARITY else "day"
+
+
 # ---------- 图表数据：每个点是 {label 横轴文字, title 提示里的标题, value 数值, lines 提示里的补充行} ----------
+# 按周 / 按月汇总时 title 里写这一周 / 这个月（范围两头不完整时写明只算了哪几天）
 def usage_chart(daily: list[dict], split: bool = True) -> dict:
     points = []
     for d in daily:
         lines = [f"人员 {web.fmt_num(d['member'])} 点 · 应用 {web.fmt_num(d['app'])} 点"] if split else []
         lines.append(f"{d['users']} 人使用")
-        points.append({"label": d["label"], "title": d["date"], "value": d["total"], "lines": lines})
+        points.append({"label": d["label"], "title": d.get("title", d["date"]), "value": d["total"], "lines": lines})
     return {"kind": "bar", "unit": "点", "points": points}
 
 
 def people_chart(daily: list[dict]) -> dict:
-    return {"kind": "line", "unit": "人", "points": [{"label": d["label"], "title": d["date"], "value": d["users"], "lines": []} for d in daily]}
+    return {"kind": "line", "unit": "人", "points": [{"label": d["label"], "title": d.get("title", d["date"]), "value": d["users"], "lines": []} for d in daily]}
 
 
 def per_capita_chart(daily: list[dict]) -> dict:
     return {
         "kind": "line",
         "unit": "点",
-        "points": [{"label": d["label"], "title": d["date"], "value": d["per_capita"], "lines": [f"{d['users']} 人使用"]} for d in daily],
+        "points": [{"label": d["label"], "title": d.get("title", d["date"]), "value": d["per_capita"], "lines": [f"{d['users']} 人使用"]} for d in daily],
     }
 
 
@@ -104,7 +113,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         if not viewer:
             return c.need_login(request)
         rng = c.pick_range(request)
-        sc = c.scope(viewer, rng.start, rng.end)
+        sc = c.scope(viewer, rng.start, rng.end, rng.monthly)
         f = sc.filter
         cur, prev = an.slice(f), an.previous(f)
         personal = f.member is not None
@@ -113,6 +122,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         return c.page(
             "portal.html", viewer, "portal", request,
             rng=rng, scope=sc.label, personal=personal, k=an.kpis(cur, prev), more=more,
+            allowance=an.allowance(c.allowance_month(rng), depts=f.depts, member=f.member, limit=1),
             anomalies=[] if personal else an.anomalies(cur, prev, sc.parent, sc.by_dept),
             scenarios=an.scenarios(f, level=1, limit=5),
             suggestions=PERSONAL_SUGGESTIONS if personal else SUGGESTIONS,
@@ -142,19 +152,19 @@ def register(app: FastAPI, c: Ctx) -> None:
         if not c.may_ask(viewer.open_id):
             return JSONResponse({"error": "问得太快了，稍等几秒再问。"}, status_code=429)
         rng = c.pick_range(request)
-        sc = c.scope(viewer, rng.start, rng.end)
+        sc = c.scope(viewer, rng.start, rng.end, rng.monthly)
         result = c.insight.ask(question, sc.filter, sc.label, sc.parent)
         c.db.audit(viewer.open_id, "insight_ask", question[:200])
         return {"html": md.render(result["answer"]), "model": result["model"], "scope": sc.label, "range": rng.label}
 
     # ---------- 运营驾驶舱 ----------
-    def cockpit(viewer: Viewer, rng: Range, dept: str) -> dict:
+    def cockpit(viewer: Viewer, rng: Range, dept: str, by: str = "day") -> dict:
         parent = dept if dept and c.directory.dept(dept) else ROOT
-        f = Filter(rng.start, rng.end, depts=frozenset(c.directory.subtree(parent))) if parent != ROOT else Filter(rng.start, rng.end)
-        o = an.overview(f, parent)
+        f = rng.filter(depts=frozenset(c.directory.subtree(parent))) if parent != ROOT else rng.filter()
+        o = an.overview(f, parent, by)
         picked = [d for d in c.db.pref(viewer.open_id, "rollup", []) if c.directory.dept(d)]
-        rollup = an.rollup(an.slice(Filter(rng.start, rng.end)), picked) if picked else None
-        return {"o": o, "parent": parent, "crumbs": crumbs(parent) if parent != ROOT else [], "rollup": rollup, "picked": picked}
+        rollup = an.rollup(an.slice(rng.filter()), picked) if picked else None
+        return {"o": o, "f": f, "parent": parent, "crumbs": crumbs(parent) if parent != ROOT else [], "rollup": rollup, "picked": picked}
 
     @app.get("/dashboard")
     def dashboard(request: Request, dept: str = ""):
@@ -163,14 +173,15 @@ def register(app: FastAPI, c: Ctx) -> None:
             return c.need_login(request)
         if denied := c.admin_only(viewer, "dashboard"):
             return denied
-        rng = c.pick_range(request)
-        data = cockpit(viewer, rng, dept)
+        rng, by = c.pick_range(request), granularity(request)
+        data = cockpit(viewer, rng, dept, by)
         o = data["o"]
         quotas = [q for q in c.quotas.list() if q["current"]]
         return c.page(
-            "dashboard.html", viewer, "dashboard", request, rng=rng, **data,
-            usage=usage_chart(o["daily"], split=data["parent"] == ROOT), people=people_chart(o["daily"]), hours=hourly_chart(o["hourly"]),
+            "dashboard.html", viewer, "dashboard", request, rng=rng, by=by, **data,
+            usage=usage_chart(o["trend"], split=data["parent"] == ROOT), people=people_chart(o["trend"]), hours=hourly_chart(o["hourly"]),
             quotas=sorted(quotas, key=lambda q: -(q["rate"] or 0))[:5], quota_summary=c.quotas.summary(quotas),
+            allowance=an.allowance(c.allowance_month(rng), depts=data["f"].depts),
         )  # fmt: skip
 
     @app.post("/dashboard/rollup")
@@ -202,20 +213,27 @@ def register(app: FastAPI, c: Ctx) -> None:
         rng = c.pick_range(request)
         data = cockpit(viewer, rng, dept)
         o, k = data["o"], data["o"]["kpis"]
-        cur = an.slice(Filter(rng.start, rng.end, depts=frozenset(c.directory.subtree(data["parent"]))) if data["parent"] != ROOT else Filter(rng.start, rng.end))
+        cur = an.slice(data["f"])
         sheets = [
             ("指标", ["指标", "数值"], [
                 ["时间范围", f"{rng.start} ~ {rng.end}"], ["总用量（点）", k["total"]], ["人员用量（点）", k["member_total"]], ["应用用量（点）", k["app_total"]],
-                ["折算费用（元）", k["cost"]], ["点数单价（元）", k["point_price"]], ["环比（%）", k.get("change")], ["活跃人数", k["active_members"]],
-                ["活跃部门数", k["active_depts"]], ["活跃应用数", k["active_apps"]], ["日均用量（点）", k["daily_avg"]], ["人均用量（点）", k["per_capita"]],
-                ["用量最高 10 人占比（%）", k["top10_share"]], ["使用记录数", k["records"]],
+                ["折算费用（元）", k["cost"]], ["点数单价（元）", k["point_price"]], [f"环比（%，和{k['prev_label']} {k['prev_start']} ~ {k['prev_end']} 比）", k.get("change")],
+                ["活跃人数", k["active_members"]], ["活跃部门数", k["active_depts"]], ["活跃应用数", k["active_apps"]], ["日均用量（点）", k["daily_avg"]],
+                ["人均用量（点）", k["per_capita"]], ["用量最高 10 人占比（%）", k["top10_share"]], ["使用记录数", k["records"]],
             ]),
             ("每日趋势", ["日期", "总用量", "人员用量", "应用用量", "活跃人数", "人均用量"], [[d["date"], d["total"], d["member"], d["app"], d["users"], d["per_capita"]] for d in o["daily"]]),
+            ("每月汇总", ["月份", "从", "到", "总用量", "人员用量", "应用用量", "活跃人数", "人均用量"],
+             [[d["date"], d["start"], d["end"], d["total"], d["member"], d["app"], d["users"], d["per_capita"]] for d in an.periods(cur, "month")]),
             ("部门", ["部门", "路径", "用量", "占比（%）", "活跃人数", "部门人数", "人均用量", "环比（%）"], [[d["name"], d["path"], d["amount"], d["share"], d["users"], d["headcount"], d["per_capita"], d["change"]] for d in o["depts"]]),
             ("人员", ["姓名", "部门", "用量", "占比（%）", "使用次数", "活跃天数", "最近使用"], [[m["name"], m["dept_path"], m["amount"], m["share"], m["records"], m["active_days"], m["last_used"]] for m in an.rank_members(cur, None, None)]),
             ("应用", ["应用", "应用 ID", "类型", "用量", "占比（%）", "使用次数", "环比（%）"], [[a["name"], a["id"], a["type"], a["amount"], a["share"], a["records"], a["change"]] for a in o["apps"]]),
             ("场景", ["场景", "用量", "占比（%）", "使用人数", "使用次数"], [[s["name"], s["amount"], s["share"], s["users"], s["records"]] for s in an.scenarios(cur.f, level=0, limit=None)]),
         ]  # fmt: skip
+        if allow := an.allowance(c.allowance_month(rng), depts=data["f"].depts, limit=None):
+            sheets.append((
+                "月度额度", ["姓名", "部门", f"{allow['label']} 已用（点）", "每人每月基础额度（点）", "占基础额度（%）", "基础额度剩余（点）", "超出基础额度（点）"],
+                [[m["name"], m["dept_path"], m["amount"], allow["per_member"], m["rate"], m["remaining"], m["over"]] for m in allow["members"]],
+            ))  # fmt: skip
         c.db.audit(viewer.open_id, "export", f"驾驶舱 {rng.start} ~ {rng.end}")
         return xlsx(excel.workbook(sheets), f"AI用量驾驶舱_{rng.start}_{rng.end}.xlsx")
 
@@ -227,19 +245,19 @@ def register(app: FastAPI, c: Ctx) -> None:
             return c.need_login(request)
         if not (viewer.is_admin or viewer.led):
             return c.notice(viewer, "这里是部门负责人的页面", "你不是部门负责人，所以没有部门运营数据可看。自己的用量在「我的用量」里。", 403, ("去我的用量", "/self-usage"), "dept_ops")
-        rng = c.pick_range(request)
+        rng, by = c.pick_range(request), granularity(request)
         # 可以切换的部门：负责人是自己负责的部门；运营管理员是一级部门
         options = [c.directory.dept(d) for d in viewer.led] if not viewer.is_admin else c.directory.children(ROOT)
         options = [d for d in options if d]
         if not dept:
             if not options:
-                return c.page("dept_ops.html", viewer, "dept_ops", request, rng=rng, dept=None, options=[])
+                return c.page("dept_ops.html", viewer, "dept_ops", request, rng=rng, by=by, dept=None, options=[])
             dept = options[0].id
         info = c.directory.dept(dept)
         if not info or not c.access.can_see_dept(viewer, dept):
             return c.notice(viewer, "看不了这个部门", "这个部门不存在，或者不在你负责的范围内。", 403, ("回到部门运营", "/dept-ops"), "dept_ops")
-        f = Filter(rng.start, rng.end, depts=frozenset(c.directory.subtree(dept)))
-        o = an.overview(f, dept)
+        f = rng.filter(depts=frozenset(c.directory.subtree(dept)))
+        o = an.overview(f, dept, by)
         cur = an.slice(f)
         main = an.top_scenario_by_member(f)
         members = an.rank_members(cur, an.previous(f), None)
@@ -248,9 +266,10 @@ def register(app: FastAPI, c: Ctx) -> None:
         # 负责人只能沿着自己负责的部门往下看，面包屑里不在范围内的上级不给链接
         trail = [(d, name, c.access.can_see_dept(viewer, d)) for d, name in crumbs(dept)]
         return c.page(
-            "dept_ops.html", viewer, "dept_ops", request, rng=rng, dept=info, options=options, trail=trail, o=o, members=members,
+            "dept_ops.html", viewer, "dept_ops", request, rng=rng, by=by, dept=info, options=options, trail=trail, o=o, members=members,
             path=c.directory.dept_path(dept), leader=c.directory.user_name(info.leader_id) if info.leader_id else "",
-            headcount=c.directory.headcount(dept), usage=usage_chart(o["daily"], split=False), people=people_chart(o["daily"]),
+            headcount=c.directory.headcount(dept), usage=usage_chart(o["trend"], split=False), people=people_chart(o["trend"]),
+            allowance=an.allowance(c.allowance_month(rng), depts=f.depts),
         )  # fmt: skip
 
     # ---------- 豆包运营 ----------
@@ -263,9 +282,9 @@ def register(app: FastAPI, c: Ctx) -> None:
             return denied
         rng = c.pick_range(request)
         parent = dept if dept and c.directory.dept(dept) else ROOT
-        f = Filter(rng.start, rng.end, doubao=True, depts=frozenset(c.directory.subtree(parent)) if parent != ROOT else None)
+        f = rng.filter(doubao=True, depts=frozenset(c.directory.subtree(parent)) if parent != ROOT else None)
         cur, prev = an.slice(f), an.previous(f)
-        by = by if by in ("day", "week", "month") else "day"
+        by = by if by in GRANULARITY else "day"
         trend = an.periods(cur, by)
         k = an.kpis(cur, prev)
         scenes = an.scenarios(f, level=0, limit=None)
@@ -365,14 +384,16 @@ def register(app: FastAPI, c: Ctx) -> None:
         open_id, denied = whose(viewer, member)
         if denied:
             return denied
-        rng = c.pick_range(request)
+        rng, by = c.pick_range(request), granularity(request)
         # 运营管理员、这个人所在部门的负责人本来就能看部门成员的用量；其他人只能看到不会泄露同事个人数据的部门汇总
-        profile = an.member_profile(open_id, rng.start, rng.end, dept_visible=c.access.can_see_dept(viewer, c.directory.user_dept(open_id)))
+        profile = an.member_profile(open_id, rng.start, rng.end, dept_visible=c.access.can_see_dept(viewer, c.directory.user_dept(open_id)), monthly=rng.monthly)
+        trend = profile["daily"] if by == "day" else an.periods(an.slice(rng.filter(member=open_id)), by)
         page = page_number(request)
         rows, total, _amount = an.logs(Filter(rng.start, rng.end, member=open_id), limit=20, offset=(page - 1) * 20)
         return c.page(
-            "self_usage.html", viewer, "self", request, rng=rng, p=profile, mine=open_id == viewer.open_id, rows=rows, pager=Pager(page, 20, total),
-            keep={"member": member if open_id != viewer.open_id else ""}, usage=usage_chart(profile["daily"], split=False),
+            "self_usage.html", viewer, "self", request, rng=rng, by=by, p=profile, mine=open_id == viewer.open_id, rows=rows, pager=Pager(page, 20, total),
+            keep={"member": member if open_id != viewer.open_id else ""}, usage=usage_chart(trend, split=False),
+            allowance=an.allowance(c.allowance_month(rng), member=open_id, limit=1),
         )  # fmt: skip
 
     @app.get("/self-usage/export.xlsx")

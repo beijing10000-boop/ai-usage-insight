@@ -1,4 +1,4 @@
-"""页面上能改的运营配置：定时同步、点数单价、周报推送。存在数据库 settings 表里，缺的项用默认值。"""
+"""页面上能改的运营配置：定时同步、点数单价、每人每月额度、周报推送。存在数据库 settings 表里，缺的项用默认值。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "sync": {"enabled": False, "hour": 5, "range_days": 2, "last_auto_date": ""},
     # 点数折算费用：1 点 = point_price 元
     "pricing": {"point_price": 0.05},
+    # 每人每月的基础额度（点）：飞书的个人 AI 额度按自然月发放、每月 1 日重置。0 = 没有设置，页面上不显示月度额度
+    "allowance": {"per_member": 0},
     # AI 用量周报：weekday 1..7 = 周一..周日；scope: active（上周有用量的人）| all（通讯录里所有人）；
     # since: 累计用量从哪天算起，空 = 当年 1 月 1 日
     "report": {"enabled": False, "weekday": 1, "hour": 9, "scope": "active", "since": "", "last_push_date": ""},
@@ -62,6 +64,15 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
         if not 0 < price <= 1000:
             raise ConfigError("单价要大于 0")
         out["point_price"] = round(price, 6)
+    elif key == "allowance":
+        raw = str(patch.get("per_member", "")).strip()
+        try:
+            value = float(raw) if raw else 0.0
+        except ValueError:
+            raise ConfigError("每人每月额度要填数字，不设置就留空") from None
+        if not 0 <= value <= 1e9:
+            raise ConfigError("每人每月额度不能是负数")
+        out["per_member"] = round(value, 2)
     elif key == "report":
         if "enabled" in patch:
             out["enabled"] = bool(patch["enabled"])
@@ -112,3 +123,7 @@ class Config:
     @property
     def point_price(self) -> float:
         return float(self.get("pricing")["point_price"])
+
+    @property
+    def monthly_allowance(self) -> float:
+        return float(self.get("allowance")["per_member"] or 0)

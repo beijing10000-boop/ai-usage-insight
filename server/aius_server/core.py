@@ -15,7 +15,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from . import web
 from .access import Access, Viewer
-from .analytics import Analytics, Filter
+from .analytics import Analytics, Filter, month_aligned, month_end, month_name
 from .config import Settings
 from .db import Database
 from .directory import Directory
@@ -24,7 +24,7 @@ from .insight import Insight
 from .prefs import Config
 from .quota import Quotas
 from .report import WeeklyReport
-from .sync import MAX_DAYS, SyncEngine
+from .sync import MAX_DAYS, SyncEngine, today
 from .vault import Vault
 
 SESSION_COOKIE = "aius_session"
@@ -45,6 +45,7 @@ FLASH = {
     "quota_saved": ("success", "额度已保存"),
     "quota_deleted": ("success", "额度记录已删除"),
     "quota_toggled": ("success", "已更新状态"),
+    "allowance_saved": ("success", "每人每月额度已保存"),
     "mapping_saved": ("success", "应用名称已保存"),
     "mapping_deleted": ("success", "已删除手工映射"),
     "report_test": ("success", "测试周报已发给你，去飞书里看一下"),
@@ -69,19 +70,46 @@ class Range:
     end: str
     preset: int | None  # 7 / 30 / 90，自定义范围是 None
     error: str = ""
+    month: str = ""  # 按月选的：this（本月）/ last（上月）/ 2026-10；不是按月选的是空
+    months: tuple[str, ...] = ()  # 「按月」下拉框里的月份（有数据的月份到本月），最近的在前
+
+    @property
+    def monthly(self) -> bool:
+        """按自然月看：从某月 1 日开始、不跨月（按月选的，或者自己填的日期正好是这样）。「近 N 天」不算，哪怕正好从 1 日开始。"""
+        return self.preset is None and month_aligned(self.start, self.end)
 
     @property
     def label(self) -> str:
-        return f"近 {self.preset} 天" if self.preset else f"{self.start} ~ {self.end}"
+        if self.preset:
+            return f"近 {self.preset} 天"
+        if self.monthly:
+            last = date.fromisoformat(self.end)
+            name = month_name(self.start)
+            return name if last == month_end(last) else f"{name} 1–{last.day} 日"
+        return f"{self.start} ~ {self.end}"
+
+    @property
+    def prev_label(self) -> str:
+        return self.filter().prev_label
+
+    @property
+    def picked_month(self) -> str:
+        """「按月」下拉框里选中哪个月：按月选的才选中，自己填的日期不算。"""
+        return self.start[:7] if self.month else ""
 
     @property
     def query(self) -> dict:
         """带着当前范围跳到别的页面时用的参数。"""
+        if self.month:
+            return {"month": self.month}
         return {"days": self.preset} if self.preset else {"start": self.start, "end": self.end}
 
     @property
     def days(self) -> int:
         return (date.fromisoformat(self.end) - date.fromisoformat(self.start)).days + 1
+
+    def filter(self, **kw) -> Filter:
+        return Filter(self.start, self.end, monthly=self.monthly, **kw)
 
 
 @dataclass
@@ -205,8 +233,11 @@ class Ctx:
 
     # ---------- 日期范围 ----------
     def pick_range(self, request: Request, default_days: int = 30) -> Range:
-        """从地址参数里取日期范围：?days=7|30|90，或 ?start=…&end=…；都没有就是默认的近 30 天。"""
+        """从地址参数里取日期范围：?days=7|30|90，?month=this|last|2026-10（自然月），或 ?start=…&end=…；
+        都没有就是默认的近 30 天。"""
         q = request.query_params
+        if q.get("month"):
+            return self._month(q["month"], default_days)
         if q.get("start") or q.get("end"):
             try:
                 first, last = date.fromisoformat(q.get("start", "")), date.fromisoformat(q.get("end", ""))
@@ -218,7 +249,7 @@ class Ctx:
                 return self._preset(default_days, "日期超出了可查询的范围，已改回默认范围")
             if (last - first).days + 1 > MAX_DAYS:
                 return self._preset(default_days, f"一次最多看 {MAX_DAYS} 天，已改回默认范围")
-            return Range(first.isoformat(), last.isoformat(), None)
+            return Range(first.isoformat(), last.isoformat(), None, months=self.months())
         try:
             days = int(q.get("days", default_days))
         except ValueError:
@@ -227,23 +258,63 @@ class Ctx:
 
     def _preset(self, days: int, error: str = "") -> Range:
         start, end = self.analytics.default_range(days)
-        return Range(start, end, days, error)
+        return Range(start, end, days, error, months=self.months())
+
+    def _month(self, raw: str, default_days: int) -> Range:
+        """一个自然月：1 日到月底；本月到最近一个有数据的日子为止。选中的正好是本月 / 上月时记成 this / last，
+        这样「本月」的链接明天打开还是本月。"""
+        this = today().replace(day=1)
+        last = (this - timedelta(days=1)).replace(day=1)
+        if raw in ("this", "last"):
+            first = this if raw == "this" else last
+        elif len(raw) == 7 and raw[4] == "-" and raw[:4].isdigit() and raw[5:].isdigit() and 1 <= int(raw[5:]) <= 12:
+            first = date(int(raw[:4]), int(raw[5:]), 1)
+            if first > this:
+                return self._preset(default_days, "这个月还没到，已改回默认范围")
+            if first.year < 2020:
+                return self._preset(default_days, "月份超出了可查询的范围，已改回默认范围")
+        else:
+            return self._preset(default_days, "月份要写成 2026-01 这样的格式，已改回默认范围")
+        month = first.isoformat()[:7]
+        start, end, _complete = self.analytics.month_span(month)
+        key = "this" if first == this else ("last" if first == last else month)
+        return Range(start, end, None, month=key, months=self.months(first))
+
+    def months(self, picked: date | None = None) -> tuple[str, ...]:
+        """「按月」下拉框里的月份：从最早有数据的那个月（至少从上个月，选中的月份更早就从它）到本月，最近的在前。"""
+        this = today().replace(day=1)
+        earliest = self.analytics.earliest_date()
+        starts = [(this - timedelta(days=1)).replace(day=1)]
+        if earliest:
+            starts.append(date.fromisoformat(earliest).replace(day=1))
+        if picked:
+            starts.append(picked)
+        m = min(starts)
+        out = []
+        while m <= this and len(out) < 120:
+            out.append(m.isoformat()[:7])
+            m = month_end(m) + timedelta(days=1)
+        return tuple(reversed(out))
+
+    def allowance_month(self, rng: Range) -> str:
+        """月度额度看哪个月：按自然月看的就是那个月，其他时候是本月。"""
+        return rng.start[:7] if rng.monthly else today().isoformat()[:7]
 
     def week_ago(self, day: str) -> str:
         return (date.fromisoformat(day) - timedelta(days=6)).isoformat()
 
     # ---------- 数据范围 ----------
-    def scope(self, viewer: Viewer, start: str, end: str) -> "Scope":
+    def scope(self, viewer: Viewer, start: str, end: str, monthly: bool = False) -> "Scope":
         """这个人默认能看的数据范围：运营管理员看全企业，部门负责人看负责的部门，其他人看自己。"""
         if viewer.is_admin:
-            return Scope(Filter(start, end), "全企业", ROOT, True)
+            return Scope(Filter(start, end, monthly=monthly), "全企业", ROOT, True)
         if viewer.led:
             names = "、".join(self.directory.dept_name(d) for d in viewer.led[:3])
             label = f"你负责的部门（{names}{'等' if len(viewer.led) > 3 else ''}）"
             # 只负责一个部门：部门排行、部门增长按它的下级部门拆。负责好几个互不相干的部门时没有共同的上级可拆
             one = len(viewer.led) == 1
-            return Scope(Filter(start, end, depts=frozenset(self.access.led_tree(viewer))), label, viewer.led[0] if one else ROOT, one)
-        return Scope(Filter(start, end, member=viewer.open_id), f"{viewer.label} 个人", ROOT, False)
+            return Scope(Filter(start, end, depts=frozenset(self.access.led_tree(viewer)), monthly=monthly), label, viewer.led[0] if one else ROOT, one)
+        return Scope(Filter(start, end, member=viewer.open_id, monthly=monthly), f"{viewer.label} 个人", ROOT, False)
 
     def may_ask(self, open_id: str) -> bool:
         """洞察助手的提问间隔（网页和 MCP 共用）：同一个人两次提问至少隔 ASK_GAP 秒，免得被脚本拿来刷模型。"""

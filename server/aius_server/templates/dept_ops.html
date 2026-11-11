@@ -1,8 +1,10 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import range_bar, stat, delta, change_stat, bar, chart, shares %}
+{% from "_macros.html" import range_bar, stat, delta, change_stat, bar, chart, shares, granularity, allowance_panel %}
 {% set title = "部门运营" %}
 {% set section = "洞察" %}
 {% set heading = dept.name if dept else "部门运营" %}
+{% set by_keep = by if by != "day" else "" %}
+{% set unit = {"day": "每天", "week": "每周", "month": "每月"}[by] %}
 
 {% block content %}
 {% if not dept %}
@@ -12,7 +14,7 @@
 </section>
 {% else %}
 {% set k = o.kpis %}
-{{ range_bar(rng, "/dept-ops", {"dept": dept.id}) }}
+{{ range_bar(rng, "/dept-ops", {"dept": dept.id, "by": by_keep}) }}
 
 {# 部门信息一行：左边是当前部门（下钻时带上级路径）、人数、负责人；右边是切换部门。
    可切换的部门可能有十几个（运营管理员看的是全部一级部门），所以用下拉框，不用一排按钮 #}
@@ -23,7 +25,7 @@
     <nav class="trail" aria-label="部门路径">
       {% for id, name, ok in trail[:-1] %}
       {% if not loop.first %}<span aria-hidden="true">›</span>{% endif %}
-      {% if ok %}<a href="{{ url_with('/dept-ops', dept=id, **rng.query) }}">{{ name }}</a>{% else %}<span>{{ name }}</span>{% endif %}
+      {% if ok %}<a href="{{ url_with('/dept-ops', dept=id, by=by_keep, **rng.query) }}">{{ name }}</a>{% else %}<span>{{ name }}</span>{% endif %}
       {% endfor %}
       <span aria-hidden="true">›</span>
     </nav>
@@ -38,7 +40,7 @@
   </div>
   {% if options|length > 1 %}
   <form method="get" action="/dept-ops" class="dept-switch">
-    {% for k, v in rng.query.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}" />{% endfor %}
+    {% for k, v in dict(rng.query, by=by_keep).items() %}{% if v not in (none, "") %}<input type="hidden" name="{{ k }}" value="{{ v }}" />{% endif %}{% endfor %}
     <label for="dept-pick">切换部门</label>
     <select id="dept-pick" name="dept">
       {% for d in options %}<option value="{{ d.id }}"{{ " selected" if d.id in chain_ids }}>{{ d.name }}</option>{% endfor %}
@@ -59,16 +61,18 @@
   {{ stat("前 10 人占比", k.top10_share|num(1) ~ "%", "用量最高的 10 个人") }}
 </div>
 
-<div class="grid2">
-  <section class="panel">
-    <div class="section-head"><div><h2>用量趋势</h2><p>部门成员每天消耗的点数</p></div></div>
-    {{ chart(usage, "部门每天的 AI 用量", "这段时间部门里还没有人用 AI。") }}
-  </section>
-  <section class="panel">
-    <div class="section-head"><div><h2>活跃人数</h2><p>每天有多少成员用了 AI</p></div></div>
-    {{ chart(people, "部门每天的活跃人数", "这段时间部门里还没有人用 AI。") }}
-  </section>
-</div>
+{% if allowance %}{{ allowance_panel(allowance, "", "；只算这个部门（含下级）的成员") }}{% endif %}
+
+<section class="panel">
+  <div class="section-head">
+    <div><h2>趋势</h2><p>部门成员{{ unit }}消耗的点数和活跃人数{{ "（活跃人数按" ~ ("周" if by == "week" else "月") ~ "去重）" if by != "day" }}</p></div>
+    {{ granularity("/dept-ops", by, dict(rng.query, dept=dept.id)) }}
+  </div>
+  <div class="grid2">
+    <div><h3>用量（点）</h3>{{ chart(usage, "部门" ~ unit ~ "的 AI 用量", "这段时间部门里还没有人用 AI。", when="时间" if by != "day" else "日期") }}</div>
+    <div><h3>活跃人数</h3>{{ chart(people, "部门" ~ unit ~ "的活跃人数", "这段时间部门里还没有人用 AI。", when="时间" if by != "day" else "日期") }}</div>
+  </div>
+</section>
 
 <div class="grid2">
   <section class="panel">
@@ -80,7 +84,7 @@
         <tbody>
           {% for d in o.depts %}
           <tr>
-            <td>{% if d.drill %}<a class="cell-title" href="{{ url_with('/dept-ops', dept=d.id, **rng.query) }}">{{ d.name }}</a>{% else %}<span class="cell-title">{{ d.name }}</span>{% endif %}</td>
+            <td>{% if d.drill %}<a class="cell-title" href="{{ url_with('/dept-ops', dept=d.id, by=by_keep, **rng.query) }}">{{ d.name }}</a>{% else %}<span class="cell-title">{{ d.name }}</span>{% endif %}</td>
             <td class="num">{{ d.amount|num }}</td>
             <td>{{ bar(d.share) }}<small>{{ d.share|num(1) }}%</small></td>
             <td class="num">{{ d.users }}{% if d.headcount %} / {{ d.headcount }}{% endif %}</td>

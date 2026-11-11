@@ -93,6 +93,13 @@
     if (event.persisted) for (const button of $$("button[type=submit][disabled]")) button.disabled = false;
   });
 
+  // ---- 选了就打开：「按月」下拉框（没有脚本时有一个「查看」按钮） ----
+  for (const select of $$("select[data-autosubmit]")) {
+    select.addEventListener("change", () => {
+      if (select.value) select.form.requestSubmit();
+    });
+  }
+
   // ---- 表格筛选：只在当前页面已有的行里筛 ----
   for (const input of $$("[data-filter-input]")) {
     const table = document.getElementById(input.dataset.filterInput);
