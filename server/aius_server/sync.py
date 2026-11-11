@@ -6,6 +6,8 @@
 - 一个数据集失败不影响其它的（任务结束时是「部分成功」）。
 - 每完成一个数据集就记一次断点；任务中断（服务重启、心跳超时）后从断点续跑，最多自动续跑 3 次。
 - 同一时间只跑一个任务：两个用量接口限频 1 次/秒，并行没有意义。
+
+另有「当天增量同步」（live）：每隔几分钟只拉当天最近一段的用量日志，替换库里这一段，不建任务、不进执行日志。
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from datetime import date, datetime, timedelta
 from . import labels
 from .db import AGG_INSERT, Database, dumps, loads
 from .directory import Directory
-from .feishu import CST, LEGACY_APP_ENTITY_TYPES, FeishuError
+from .feishu import CST, LEGACY_APP_ENTITY_TYPES, FeishuError, day_range
 from .labels import APP_ENTITY_TYPES, DETAIL_FIELDS, clean_scenario
 
 log = logging.getLogger("aius")
@@ -38,6 +40,14 @@ MAX_DAYS = 366  # 接口一次最多查 365 天；这里按天拉，只是不让
 # 飞书给的比库里少就保留库里的；留几天余量，免得卡在保留期边上、只剩半天数据的那一天被覆盖
 RETENTION_GUARD_DAYS = 355
 MAX_PAGES = 20000
+# 当天增量同步每次往回多拉一段：飞书的日志要晚一分多钟才查得到（实测 2026-11），留足余量
+LIVE_OVERLAP = 600
+LIVE_CURSOR = "live_cursor"  # meta：{"until": 拉到的时间戳, "gen": 整天替换过几次未过完的日子}
+LIVE_LAST = "live_last"  # meta：最近一次增量同步的结果（同步管理页显示）
+LOG_INSERT = (
+    "INSERT INTO usage_logs(usage_date, subject, ts, entity_type, entity_id, entity_name, department_id, "
+    "usage_type, feature_key, used_quota, scenario, notes, run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
+)
 
 
 class SyncError(Exception):
@@ -77,6 +87,27 @@ def _rejects_entity_type(error: FeishuError) -> bool:
     return not error.retryable and any(word in text for word in ("entity_type", "entity type", "invalid param", "param", "参数"))
 
 
+def segments(start: int, end: int) -> list[tuple[str, int, int]]:
+    """把一段时间按北京时间的自然日切开：[(日期, 起, 止)]，起止是秒级时间戳、两头都含。"""
+    out = []
+    t = start
+    while t <= end:
+        day = datetime.fromtimestamp(t, CST).date().isoformat()
+        last = day_range(day)[1]
+        out.append((day, t, min(end, last)))
+        t = last + 1
+    return out
+
+
+def _meta(c: sqlite3.Connection, key: str) -> str | None:
+    row = c.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def _set_meta(c: sqlite3.Connection, key: str, value: str) -> None:
+    c.execute("INSERT INTO meta(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+
 def _entity(item: dict, subject: str) -> tuple[str, str]:
     """(实体 ID, 内置名称)。飞书项目、CodeM 沙箱这类「整个产品算一个应用」的类型没有自己的应用 ID
     （接口返回空或 -1），给它们一个按类型定的固定 ID，免得被丢掉或者几类混成一个。"""
@@ -97,6 +128,7 @@ class SyncEngine:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._current: int | None = None
+        self._live_lock = threading.Lock()
 
     # ---------- 发起 / 停止 ----------
     def start(self, start_date: str, end_date: str, trigger: str, actor: str) -> int:
@@ -177,7 +209,7 @@ class SyncEngine:
                     done.add(key)  # 统计详情是 T+1，当天还没有
                     continue
                 try:
-                    collected, pages, app_types = self._fetch(run_id, kind, subject, day, app_types)
+                    collected, pages, app_types, fetched_at = self._fetch(run_id, kind, subject, day, app_types)
                     kept = self._keep_existing(kind, subject, day, len(collected), app_types)
                     if kept:  # 飞书这次给的比库里已有的少（过了保留期、或者接口返回空）：不覆盖
                         stats["pages"] += pages
@@ -185,7 +217,7 @@ class SyncEngine:
                         self._step(run_id, day, dataset, pages, 0, "kept", kept)
                         self._save(run_id, done, stats)
                         continue
-                    rows = self._write(kind, subject, day, collected, app_types)
+                    rows = self._write(kind, subject, day, collected, app_types, fetched_at)
                 except FeishuError as e:
                     stats["failed"] += 1
                     errors.append(f"{day} {DATASET_LABELS[dataset]}：{e}")
@@ -221,16 +253,21 @@ class SyncEngine:
         if self.db.val("SELECT stop_requested FROM sync_runs WHERE id=?", (run_id,), 0):
             raise _Stopped()
 
-    def _fetch(self, run_id: int, kind: str, subject: str, day: str, app_types: tuple[int, ...]) -> tuple[list[tuple], int, tuple[int, ...]]:
-        """把一个「日期 × 数据集」的所有分页拉下来，每一页随到随转换成要写库的行（大企业一天几万条，
-        只留转换后的行比留接口原始的 JSON 省得多）。每拉一页记一次进度，页面上能看到拉到哪儿了。"""
+    def _fetch(
+        self, run_id: int, kind: str, subject: str, day: str, app_types: tuple[int, ...], window: tuple[int, int] | None = None
+    ) -> tuple[list[tuple], int, tuple[int, ...], int]:
+        """把一个「日期 × 数据集」（或这一天里的一段 window）的所有分页拉下来，每一页随到随转换成要写库的行
+        （大企业一天几万条，只留转换后的行比留接口原始的 JSON 省得多）。每拉一页记一次进度，页面上能看到拉到哪儿了。
+        run_id 为 0 是当天增量同步：不检查停止、不记进度。返回 (行, 页数, 应用类型, 开始拉的时间)。"""
         rows: list[tuple] = []
         pages, token, seen = 0, "", set()
         dataset = f"{kind}_{subject}"
+        fetched_at = int(time.time())  # 第一页是最新的：这一刻之后产生的用量不在这次拉到的数据里
         while True:
-            self._check_stop(run_id)
+            if run_id:
+                self._check_stop(run_id)
             try:
-                page, token = self.feishu.usage_page(kind, subject, day, token, app_types)
+                page, token = self.feishu.usage_page(kind, subject, day, token, app_types, window=window)
             except FeishuError as e:
                 # 应用维度第一页因为参数被拒：可能是这家企业的灰度版本还不认新的应用类型，用早期的四种再试一次。
                 # 只在错误说的是参数 / 实体类型时才这么做——别的错误（没权限、token 失效……）照常算失败，
@@ -242,13 +279,14 @@ class SyncEngine:
             converted = self._rows(kind, subject, day, page, run_id)
             rows.extend(converted)
             pages += 1
-            # 用量日志是从当天最晚往最早给的：这一页最早的那条记录的时间，就是「拉到当天几点了」
-            stamps = [r[2] for r in converted if kind == "log" and r[2]]
-            reached = datetime.fromtimestamp(min(stamps), CST).strftime("%H:%M") if stamps else ""
-            progress = {"day": day, "dataset": dataset, "label": DATASET_LABELS[dataset], "pages": pages, "rows": len(rows), "reached": reached}
-            self.db.x("UPDATE sync_runs SET heartbeat_at=?, progress=? WHERE id=?", (int(time.time()), dumps(progress), run_id))
+            if run_id:
+                # 用量日志是从当天最晚往最早给的：这一页最早的那条记录的时间，就是「拉到当天几点了」
+                stamps = [r[2] for r in converted if kind == "log" and r[2]]
+                reached = datetime.fromtimestamp(min(stamps), CST).strftime("%H:%M") if stamps else ""
+                progress = {"day": day, "dataset": dataset, "label": DATASET_LABELS[dataset], "pages": pages, "rows": len(rows), "reached": reached}
+                self.db.x("UPDATE sync_runs SET heartbeat_at=?, progress=? WHERE id=?", (int(time.time()), dumps(progress), run_id))
             if not token:
-                return rows, pages, app_types
+                return rows, pages, app_types, fetched_at
             if token in seen or pages >= MAX_PAGES:
                 raise FeishuError("分页异常：飞书接口返回了重复的分页标记")
             seen.add(token)
@@ -315,19 +353,22 @@ class SyncEngine:
             return f"飞书这次没有返回这一天的{label}，库里已有 {existing:,} 条：保留原数据，没有覆盖。如果确认飞书那边的数据确实没有了，请联系管理员处理"
         return ""
 
-    def _write(self, kind: str, subject: str, day: str, rows: list[tuple], app_types: tuple[int, ...] = APP_ENTITY_TYPES) -> int:
+    def _write(
+        self, kind: str, subject: str, day: str, rows: list[tuple], app_types: tuple[int, ...] = APP_ENTITY_TYPES, fetched_at: int | None = None
+    ) -> int:
         scope, scope_params = self._scope(subject, day, app_types)
         if kind == "log":
             with self.db.tx() as c:
                 c.execute(f"DELETE FROM usage_logs WHERE {scope}", scope_params)
-                c.executemany(
-                    "INSERT INTO usage_logs(usage_date, subject, ts, entity_type, entity_id, entity_name, department_id, "
-                    "usage_type, feature_key, used_quota, scenario, notes, run_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    rows,
-                )
+                c.executemany(LOG_INSERT, rows)
                 # 汇总表跟着一起换（同一个事务），统计页面看到的总是和明细一致
                 c.execute(f"DELETE FROM usage_agg WHERE {scope}", scope_params)
                 c.execute(AGG_INSERT.format(where=scope), scope_params)
+                if fetched_at is not None and fetched_at < day_range(day)[1]:
+                    # 这一天还没过完就整天替换了：fetched_at 之后的用量（增量同步可能已经拉到过）刚被删掉，
+                    # 把增量同步的游标退回到 fetched_at，下一次从那儿重新拉；gen 告诉正在跑的那次增量同步「别往前推游标」
+                    cur = loads(_meta(c, LIVE_CURSOR), {})
+                    _set_meta(c, LIVE_CURSOR, dumps({"until": min(cur.get("until", 0), fetched_at), "gen": cur.get("gen", 0) + 1}))
             return len(rows)
         with self.db.tx() as c:
             c.execute(f"DELETE FROM usage_details WHERE {scope}", scope_params)
@@ -358,6 +399,75 @@ class SyncEngine:
             ),
             "apps": self.db.val("SELECT COUNT(DISTINCT entity_id) FROM usage_agg WHERE subject='app' AND usage_date BETWEEN ? AND ?", span, 0),
         }
+
+    # ---------- 当天增量同步 ----------
+    def live_until(self) -> int:
+        """当天增量同步拉到了什么时候（秒级时间戳）：这之前的用量日志都在库里了。0 = 还没拉过。"""
+        return int(loads(self.db.meta(LIVE_CURSOR), {}).get("until", 0))
+
+    def live_state(self) -> dict:
+        """最近一次增量同步的结果：at 开始时间、rows 条数、pages 页数、seconds 用时、error 出错原因。"""
+        return {"at": 0, "rows": 0, "pages": 0, "seconds": 0, "error": "", **loads(self.db.meta(LIVE_LAST), {}), "until": self.live_until()}
+
+    def live_running(self) -> bool:
+        return self._live_lock.locked()
+
+    def live(self, now: int | None = None) -> dict:
+        """拉上次拉到的时间（往回多拉 LIVE_OVERLAP）到现在的人员和应用用量日志，替换库里这一段，再重算这一天的汇总。
+        平时一次几百到一千来条、十来秒；第一次（或者停了一天以上）从今天 0 点拉起。跨过 0 点时前一天的尾巴也一起补上。
+
+        可以和整天同步同时进行：整天替换一个还没过完的日子，会把游标退回到它开始拉的时刻（见 _write）。
+        游标只在本次拉的过程中没有发生这种替换时才往前推，所以「游标之前的数据都在库里」始终成立。"""
+        if not self._live_lock.acquire(blocking=False):
+            return {**self.live_state(), "skipped": True}
+        try:
+            return self._live(int(now or time.time()))
+        finally:
+            self._live_lock.release()
+
+    def _live(self, now: int) -> dict:
+        began = time.monotonic()
+        cursor = loads(self.db.meta(LIVE_CURSOR), {})
+        base, gen = int(cursor.get("until", 0)), int(cursor.get("gen", 0))
+        day_start = day_range(datetime.fromtimestamp(now, CST).date().isoformat())[0]
+        start = max(base - LIVE_OVERLAP, day_start - LIVE_OVERLAP) if base else day_start
+        result = {"at": now, "start": start, "rows": 0, "pages": 0, "seconds": 0, "error": ""}
+        try:
+            for day, a, b in segments(start, now):
+                for subject in ("member", "app"):
+                    rows, pages = self._live_slice(day, subject, a, b)
+                    result["rows"] += rows
+                    result["pages"] += pages
+        except FeishuError as e:
+            result["error"] = str(e)
+            log.warning("当天增量同步失败：%s", e)
+        except Exception as e:  # 没想到的错误也记下来，下一轮照常再试
+            log.exception("当天增量同步异常")
+            result["error"] = f"内部错误：{type(e).__name__} {e}"
+        else:
+            with self.db.tx() as c:
+                cur = loads(_meta(c, LIVE_CURSOR), {})
+                if int(cur.get("gen", 0)) == gen:
+                    _set_meta(c, LIVE_CURSOR, dumps({"until": now, "gen": gen}))
+        result["seconds"] = round(time.monotonic() - began)
+        self.db.set_meta(LIVE_LAST, dumps(result))
+        return {**result, "until": self.live_until()}
+
+    def _live_slice(self, day: str, subject: str, a: int, b: int) -> tuple[int, int]:
+        """一天里 [a, b] 这一段：拉下来、删掉库里这一段、写进去、重算这一天的汇总，在一个事务里。返回 (写入条数, 页数)。"""
+        collected, pages, app_types, _ = self._fetch(0, "log", subject, day, APP_ENTITY_TYPES, window=(a, b))
+        rows = [r for r in collected if r[2] and a <= r[2] <= b]  # 只认这一段里的，删和写的范围一致才不会重复
+        scope, params = self._scope(subject, day, app_types)
+        piece, piece_params = f"{scope} AND ts BETWEEN ? AND ?", [*params, a, b]
+        if not rows:
+            # 这一段飞书一条都没给：库里本来没有就不用动；库里有的话多半是接口的问题，不覆盖（和整天同步的规则一样）
+            return 0, pages
+        with self.db.tx() as c:
+            c.execute(f"DELETE FROM usage_logs WHERE {piece}", piece_params)
+            c.executemany(LOG_INSERT, rows)
+            c.execute(f"DELETE FROM usage_agg WHERE {scope}", params)
+            c.execute(AGG_INSERT.format(where=scope), params)
+        return len(rows), pages
 
     # ---------- 名称解析 ----------
     def _resolve_names(self, run_id: int, start: str, end: str) -> None:

@@ -10,8 +10,9 @@ from .db import Database, dumps, loads
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     # 每日定时同步。飞书建议避开凌晨 2 点左右的请求高峰，所以默认 5 点；默认同步前 2 天：
-    # 统计详情是 T+1 的，头一天同步时可能还没出齐，第二天顺带补上
-    "sync": {"enabled": False, "hour": 5, "range_days": 2, "last_auto_date": ""},
+    # 统计详情是 T+1 的，头一天同步时可能还没出齐，第二天顺带补上。
+    # live_minutes：开着定时同步时，当天的用量日志每隔几分钟增量更新一次；0 = 当天不自动更新
+    "sync": {"enabled": False, "hour": 5, "range_days": 2, "live_minutes": 10, "last_auto_date": ""},
     # 点数折算费用：1 点 = point_price 元
     "pricing": {"point_price": 0.05},
     # 每人每月的基础额度（点）：飞书的个人 AI 额度按自然月发放、每月 1 日重置。0 = 没有设置，页面上不显示月度额度
@@ -56,6 +57,11 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
             out["hour"] = _int(patch["hour"], 0, 23, "执行时间")
         if "range_days" in patch:
             out["range_days"] = _int(patch["range_days"], 1, 31, "同步范围")
+        if "live_minutes" in patch:
+            minutes = _int(patch["live_minutes"], 0, 60, "当天数据更新间隔")
+            if 0 < minutes < 5:
+                raise ConfigError("当天数据最快 5 分钟更新一次（飞书的用量接口每秒只能查 1 次）")
+            out["live_minutes"] = minutes
     elif key == "pricing":
         try:
             price = float(patch.get("point_price"))

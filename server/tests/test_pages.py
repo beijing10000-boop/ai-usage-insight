@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import io
 import re
+import time
 import zipfile
+from datetime import datetime
 
 import pytest
 
 from aius_server.core import hash_secret
-from conftest import D1, D2, login
+from aius_server.feishu import CST
+from conftest import D0, D1, D2, log, login, stamped
 
 ADMIN_PAGES = ["/dashboard", "/doubao-ops", "/data", "/data?tab=details", "/quota", "/sync", "/logs", "/logs/1", "/config", "/roles", "/audit"]
 EVERYONE_PAGES = ["/", "/overview", "/self-usage", "/connect"]
@@ -116,13 +119,30 @@ def test_posts_need_a_session_the_right_origin_and_the_admin_role(env):
     assert env.ctx.engine.active() is None and env.ctx.config.point_price == 0.05 and not env.ctx.access.viewer("ou_dave").is_admin
 
 
+def test_sync_page_shows_the_live_sync(env):
+    env.ctx.config.save("sync", {"enabled": True}, "ou_admin")
+    c = env.browser("admin@example.com")
+    assert "等待第一次更新" in c.get("/sync").text
+    env.feishu.usage[("log", "member", D0)] = stamped([log("ou_bob", "d-rd", "知识问答", 1, hour=0)], D0)
+    now = int(time.time())
+    env.ctx.engine.live(now=now)
+    clock = datetime.fromtimestamp(now, CST).strftime("%H:%M")
+    page = c.get("/sync").text
+    assert f"数据截至 {clock}" in page and "新拉到 1 条" in page and "每 10 分钟更新" in page
+    assert f"数据截至 {D0} {clock}" in c.get("/dashboard").text  # 侧栏带上几点
+
+
 def test_sync_page_actions(env):
     c = env.browser("admin@example.com")
     assert c.post("/sync", data={"action": "check"}).headers["location"] == "/sync?done=connected"
     assert "已连接" in c.get("/sync").text
     r = c.post("/sync", data={"action": "schedule", "enabled": "1", "hour": "6", "range_days": "3"})
-    assert r.status_code == 303 and env.ctx.config.get("sync") == {"enabled": True, "hour": 6, "range_days": 3, "last_auto_date": ""}
+    assert r.status_code == 303 and env.ctx.config.get("sync") == {"enabled": True, "hour": 6, "range_days": 3, "live_minutes": 10, "last_auto_date": ""}
     assert c.post("/sync", data={"action": "schedule", "enabled": "1", "hour": "99", "range_days": "3"}).status_code == 400
+    assert c.post("/sync", data={"action": "schedule", "enabled": "1", "hour": "6", "range_days": "3", "live_minutes": "2"}).status_code == 400
+    c.post("/sync", data={"action": "schedule", "enabled": "1", "hour": "6", "range_days": "3", "live_minutes": "30"})
+    assert env.ctx.config.get("sync")["live_minutes"] == 30
+    assert "当天数据每 30 分钟更新" in env.db.val("SELECT detail FROM audit_log WHERE action='config' ORDER BY id DESC LIMIT 1")
     assert c.post("/sync", data={"action": "start", "start": D1, "end": D2}).status_code == 400
     assert c.post("/sync", data={"action": "start", "start": D1, "end": D1}).headers["location"] == "/sync?done=sync_started"
     status = c.get("/sync/status").json()["active"]
