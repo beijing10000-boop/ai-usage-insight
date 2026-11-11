@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import range_bar, stat, delta, change_stat, bar, chart, shares, trail, suggest_input, granularity, allowance_panel %}
+{% from "_macros.html" import range_bar, stat, money_stat, delta, change_stat, bar, chart, shares, trail, suggest_input, granularity, allowance_panel %}
 {% set title = "运营驾驶舱" %}
 {% set section = "洞察" %}
 {% set k = o.kpis %}
@@ -17,7 +17,8 @@
 <p class="notice narrative"><b>本期解读</b>　{{ o.narrative }}</p>
 
 <div class="stats">
-  {{ stat("总用量（点）", k.total|compact, "折算 " ~ k.cost|money ~ "（" ~ k.point_price|num(4) ~ " 元/点）", full=k.total) }}
+  {{ stat("总用量（点）", k.total|compact, "人员 " ~ k.member_total|compact ~ " · 应用 " ~ k.app_total|compact, full=k.total) }}
+  {{ money_stat("消耗金额", k.cost, "按 " ~ k.point_price|num(4) ~ " 元/点折算") }}
   {{ change_stat(k) }}
   {{ stat(k.end ~ " 当日用量", k.last_day|compact, k.last_day_users ~ " 人使用", full=k.last_day) }}
   {{ stat("活跃人数", k.active_members|num, ("占在职 " ~ k.coverage|num(1) ~ "%") if k.coverage is not none and not crumbs else "这段时间用过 AI 的人") }}
@@ -64,12 +65,13 @@
     {% if o.depts %}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>部门</th><th class="num">用量（点）</th><th>占比</th><th class="num">活跃 / 人数</th><th class="num">人均</th><th class="num">环比</th></tr></thead>
+        <thead><tr><th>部门</th><th class="num">用量（点）</th><th class="num">金额</th><th>占比</th><th class="num">活跃 / 人数</th><th class="num">人均</th><th class="num">环比</th></tr></thead>
         <tbody>
           {% for d in o.depts %}
           <tr>
             <td>{% if d.drill %}<a class="cell-title" href="{{ url_with('/dashboard', dept=d.id, by=keep.by, **rng.query) }}">{{ d.name }}</a>{% else %}<span class="cell-title">{{ d.name }}</span>{% endif %}</td>
             <td class="num">{{ d.amount|num }}</td>
+            <td class="num">{{ (d.amount * k.point_price)|money }}</td>
             <td>{{ bar(d.share) }}<small>{{ d.share|num(1) }}%</small></td>
             <td class="num">{{ d.users }}{% if d.headcount %} / {{ d.headcount }}{% endif %}</td>
             <td class="num">{{ d.per_capita|num(1) }}</td>
@@ -92,12 +94,13 @@
     {% if o.members %}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>姓名</th><th class="num">用量（点）</th><th>占比</th><th class="num">次数</th><th class="num">环比</th></tr></thead>
+        <thead><tr><th>姓名</th><th class="num">用量（点）</th><th class="num">金额</th><th>占比</th><th class="num">次数</th><th class="num">环比</th></tr></thead>
         <tbody>
           {% for m in o.members %}
           <tr>
             <td><a class="cell-title" href="{{ url_with('/self-usage', member=m.id, **rng.query) }}">{{ m.name }}</a><small>{{ m.dept_path }}</small></td>
             <td class="num">{{ m.amount|num }}</td>
+            <td class="num">{{ (m.amount * k.point_price)|money }}</td>
             <td>{{ bar(m.share) }}<small>{{ m.share|num(1) }}%</small></td>
             <td class="num">{{ m.records|num }}</td>
             <td class="num">{{ delta(m.change) }}</td>
@@ -123,12 +126,13 @@
     {% elif o.apps %}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>应用</th><th class="num">用量（点）</th><th>占比</th><th class="num">环比</th></tr></thead>
+        <thead><tr><th>应用</th><th class="num">用量（点）</th><th class="num">金额</th><th>占比</th><th class="num">环比</th></tr></thead>
         <tbody>
           {% for a in o.apps %}
           <tr>
             <td><span class="cell-title">{{ a.name }}</span><small>{{ a.type }}{% if not a.named %} · 还没有名称，显示的是应用 ID{% endif %}</small></td>
             <td class="num">{{ a.amount|num }}</td>
+            <td class="num">{{ (a.amount * k.point_price)|money }}</td>
             <td>{{ bar(a.share) }}<small>{{ a.share|num(1) }}%</small></td>
             <td class="num">{{ delta(a.change) }}</td>
           </tr>

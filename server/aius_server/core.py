@@ -193,7 +193,7 @@ class Ctx:
 
     # ---------- 页面 ----------
     def shell(self, viewer: Viewer, active: str) -> web.Shell:
-        return web.Shell(viewer, active, self.analytics.latest_label(), self.engine.active() is not None, web.navigation(viewer))
+        return web.Shell(viewer, active, self.analytics.latest_label(), self.engine.active() is not None, web.navigation(viewer), self.config.point_price)
 
     def page(self, template: str, viewer: Viewer, active: str, request: Request | None = None, status: int = 200, **ctx) -> Response:
         flash = FLASH.get(request.query_params.get("done", "")) if request else None

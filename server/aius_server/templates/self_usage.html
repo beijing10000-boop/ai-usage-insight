@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import range_bar, stat, delta, change_stat, chart, shares, paging, granularity, allowance_stat %}
+{% from "_macros.html" import range_bar, stat, money_stat, delta, change_stat, chart, shares, paging, granularity, allowance_stat, suggest_input %}
 {% set title = "我的用量" if mine else p.name ~ " 的用量" %}
 {% set section = "洞察" %}
 {% set unit = {"day": "每天", "week": "每周", "month": "每月"}[by] %}
@@ -12,10 +12,20 @@
 {% block content %}
 {{ range_bar(rng, "/self-usage", bar_keep) }}
 
-{% if not mine %}<p class="notice">你正在看 <b>{{ p.name }}</b>（{{ p.dept_path }}）的用量。<a href="{{ url_with('/self-usage', **rng.query) }}">回到我的用量</a></p>{% endif %}
+{% if not mine %}
+<p class="notice">你正在看 <b>{{ p.name }}</b>（{{ p.dept_path }}）的用量，页面和他自己在「我的用量」里看到的一样。<a href="{{ url_with('/self-usage', **rng.query) }}">回到我的用量</a></p>
+{% if shell.viewer.is_admin %}
+<form method="get" action="/members" class="add-row">
+  <label class="offscreen-label" for="switch-member">换一个人</label>
+  {{ suggest_input("switch-member", "q", "user", "换一个人：输入姓名，从列表里选") }}
+  <button type="submit" class="btn">查看</button>
+</form>
+{% endif %}
+{% endif %}
 
 <div class="stats">
-  {{ stat("消耗点数", p.total|compact, "折算 " ~ p.cost|money, full=p.total) }}
+  {{ stat("消耗点数", p.total|compact, rng.label, full=p.total) }}
+  {{ money_stat("消耗金额", p.cost, "按 " ~ shell.point_price|num(4) ~ " 元/点折算") }}
   {{ change_stat(p) }}
   {{ stat("使用次数", p.records|num, "每用一次 AI 功能记一次") }}
   {{ stat("活跃天数", p.active_days ~ " / " ~ p.days, "有用量的天数 / 总天数") }}
@@ -77,7 +87,7 @@
   {% if rows %}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>时间</th><th>场景</th><th>额度类型</th><th>用量类型</th><th class="num">消耗（点）</th><th class="num">折算</th></tr></thead>
+      <thead><tr><th>时间</th><th>场景</th><th>额度类型</th><th>用量类型</th><th class="num">消耗（点）</th><th class="num">金额</th></tr></thead>
       <tbody>
         {% for r in rows %}
         <tr>

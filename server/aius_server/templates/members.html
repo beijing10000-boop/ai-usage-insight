@@ -1,0 +1,68 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import suggest_input %}
+{% set title = "成员用量" %}
+{% set section = "洞察" %}
+
+{% macro person_link(id, name) %}<a class="cell-title" href="{{ url_with('/self-usage', member=id) }}">{{ name }}</a>{% endmacro %}
+
+{% block content %}
+<section class="panel">
+  <div class="section-head">
+    <div><h2>查看某个人的用量</h2><p>看到的页面和他自己在「我的用量」里看到的一样：消耗点数、每月额度、每天的用量、用在哪里、额度类型和每一次使用的明细，也能导出</p></div>
+  </div>
+  <form method="get" action="/members" class="add-row">
+    <label class="offscreen-label" for="member-q">要查看的人</label>
+    {{ suggest_input("member-q", "q", "user", "输入姓名、英文名或邮箱，从列表里选", value=q) }}
+    <button type="submit" class="btn primary">查看</button>
+  </form>
+  {% if q %}
+  {% if found %}
+  <p class="help">「{{ q }}」找到 {{ found|length }} 个人，点名字查看：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>姓名</th><th>部门</th><th class="num">{{ month_label }}用量（点）</th><th class="num">金额</th></tr></thead>
+      <tbody>
+        {% for m in found %}
+        <tr>
+          <td>{{ person_link(m.id, m.name) }}{% if m.en_name and m.en_name != m.name %}<small>{{ m.en_name }}</small>{% endif %}</td>
+          <td>{{ m.dept_path }}</td>
+          <td class="num">{{ m.amount|num }}</td>
+          <td class="num">{{ (m.amount * shell.point_price)|money }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">通讯录里没有找到「{{ q }}」。可以换成姓名的一部分、英文名或邮箱再试；已经离职的人不在通讯录里，可以在「用量明细」里按人员筛选。</p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-head">
+    <div><h2>本月用量最多的人</h2><p>{{ month_label }}，点名字查看他的用量{{ "；每人每月基础额度 " ~ per|num ~ " 点" if per }}</p></div>
+  </div>
+  {% if top %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th class="num">排名</th><th>姓名</th><th class="num">用量（点）</th><th class="num">金额</th>{% if per %}<th class="num">占基础额度</th>{% endif %}<th class="num">次数</th></tr></thead>
+      <tbody>
+        {% for m in top %}
+        <tr>
+          <td class="num">{{ loop.index }}</td>
+          <td>{{ person_link(m.id, m.name) }}<small>{{ m.dept_path }}</small></td>
+          <td class="num">{{ m.amount|num }}</td>
+          <td class="num">{{ (m.amount * shell.point_price)|money }}</td>
+          {% if per %}<td class="num">{{ (m.amount / per * 100)|num(0) }}%</td>{% endif %}
+          <td class="num">{{ m.records|num }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">这个月还没有用量数据。</p>
+  {% endif %}
+</section>
+{% endblock %}

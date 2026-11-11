@@ -10,14 +10,15 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from . import excel, labels, md, web
 from .access import Viewer
-from .analytics import Filter
+from .analytics import Filter, month_name, r2
 from .core import Ctx, Range
 from .feishu import ROOT
 from .insight import MAX_QUESTION, PERSONAL_SUGGESTIONS, SUGGESTIONS
+from .sync import today
 
 PAGE_SIZE = 50
 EXPORT_LIMIT = 100000
@@ -393,8 +394,11 @@ def register(app: FastAPI, c: Ctx) -> None:
         trend = profile["daily"] if by == "day" else an.periods(an.slice(rng.filter(member=open_id)), by)
         page = page_number(request)
         rows, total, _amount = an.logs(Filter(rng.start, rng.end, member=open_id), limit=20, offset=(page - 1) * 20)
+        mine = open_id == viewer.open_id
+        # 看别人的：运营管理员是从「成员用量」来的，部门负责人是从「部门运营」来的，导航停在那一项上
+        active = "self" if mine else ("members" if viewer.is_admin else "dept_ops")
         return c.page(
-            "self_usage.html", viewer, "self", request, rng=rng, by=by, p=profile, mine=open_id == viewer.open_id, rows=rows, pager=Pager(page, 20, total),
+            "self_usage.html", viewer, active, request, rng=rng, by=by, p=profile, mine=mine, rows=rows, pager=Pager(page, 20, total),
             keep={"member": member if open_id != viewer.open_id else ""}, usage=usage_chart(trend, split=False),
             allowance=an.allowance(c.allowance_month(rng), member=open_id, limit=1),
         )  # fmt: skip
@@ -411,6 +415,33 @@ def register(app: FastAPI, c: Ctx) -> None:
         rows, _total, _amount = an.logs(Filter(rng.start, rng.end, member=open_id), limit=EXPORT_LIMIT, offset=0)
         c.db.audit(viewer.open_id, "export", f"个人用量 {c.directory.user_name(open_id)} {rng.start} ~ {rng.end}")
         return xlsx(excel.workbook([logs_sheet(rows)]), f"AI用量_{rng.start}_{rng.end}.xlsx")
+
+    # ---------- 成员用量（运营管理员） ----------
+    @app.get("/members")
+    def members(request: Request, q: str = ""):
+        """查任何一个人的用量：按姓名、英文名、邮箱搜，只搜到一个人就直接打开他的用量页——和他自己在「我的用量」里看到的一样。
+        没有输入时列出本月用量最多的人。"""
+        viewer = c.user(request)
+        if not viewer:
+            return c.need_login(request)
+        if denied := c.admin_only(viewer, "members"):
+            return denied
+        q = q.strip()[:100]
+        matches = c.directory.search_users(q, limit=30) if q else []
+        if len(matches) == 1:
+            return RedirectResponse(web.url_with("/self-usage", member=matches[0].open_id), status_code=303)
+        month = today().isoformat()[:7]
+        start, end, complete = an.month_span(month)
+        cur = an.slice(Filter(start, end, monthly=True))
+        found = [
+            {"id": u.open_id, "name": u.name, "en_name": u.en_name, "dept_path": c.directory.dept_path(u.dept_ids[0]) if u.dept_ids else "未归属部门",
+             "amount": r2(cur.by_member.get(u.open_id, {}).get("amount", 0.0))}
+            for u in matches
+        ]  # fmt: skip
+        return c.page(
+            "members.html", viewer, "members", request, q=q, found=found, top=an.rank_members(cur, limit=20), per=c.config.monthly_allowance,
+            month_label=month_name(month) + ("" if complete else f"（截至 {int(end[5:7])}/{int(end[8:10])}）"),
+        )  # fmt: skip
 
     # ---------- 输入联想 ----------
     @app.get("/suggest")

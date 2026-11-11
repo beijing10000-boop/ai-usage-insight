@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import range_bar, stat, delta, change_stat, bar, chart, shares, granularity, allowance_panel %}
+{% from "_macros.html" import range_bar, stat, money_stat, delta, change_stat, bar, chart, shares, granularity, allowance_panel %}
 {% set title = "部门运营" %}
 {% set section = "洞察" %}
 {% set heading = dept.name if dept else "部门运营" %}
@@ -53,7 +53,8 @@
 <p class="notice narrative"><b>本期解读</b>　{{ o.narrative }}</p>
 
 <div class="stats">
-  {{ stat("部门用量（点）", k.total|compact, "折算 " ~ k.cost|money ~ "，含下级部门", full=k.total) }}
+  {{ stat("部门用量（点）", k.total|compact, "含下级部门", full=k.total) }}
+  {{ money_stat("部门消耗金额", k.cost, "按 " ~ k.point_price|num(4) ~ " 元/点折算，含下级部门") }}
   {{ change_stat(k) }}
   {{ stat("活跃人数", k.active_members ~ " / " ~ headcount, "用过 AI 的人 / 部门人数") }}
   {{ stat("人均用量（点）", k.per_capita|compact, "按活跃人数平均", full=k.per_capita) }}
@@ -80,12 +81,13 @@
     {% if o.depts %}
     <div class="table-wrap">
       <table>
-        <thead><tr><th>部门</th><th class="num">用量（点）</th><th>占比</th><th class="num">活跃 / 人数</th><th class="num">人均</th><th class="num">环比</th></tr></thead>
+        <thead><tr><th>部门</th><th class="num">用量（点）</th><th class="num">金额</th><th>占比</th><th class="num">活跃 / 人数</th><th class="num">人均</th><th class="num">环比</th></tr></thead>
         <tbody>
           {% for d in o.depts %}
           <tr>
             <td>{% if d.drill %}<a class="cell-title" href="{{ url_with('/dept-ops', dept=d.id, by=by_keep, **rng.query) }}">{{ d.name }}</a>{% else %}<span class="cell-title">{{ d.name }}</span>{% endif %}</td>
             <td class="num">{{ d.amount|num }}</td>
+            <td class="num">{{ (d.amount * k.point_price)|money }}</td>
             <td>{{ bar(d.share) }}<small>{{ d.share|num(1) }}%</small></td>
             <td class="num">{{ d.users }}{% if d.headcount %} / {{ d.headcount }}{% endif %}</td>
             <td class="num">{{ d.per_capita|num(1) }}</td>
@@ -120,12 +122,13 @@
   <div class="toolbar"><input type="search" data-filter-input="member-table" placeholder="按姓名、部门或场景筛选" aria-label="筛选成员" /></div>
   <div class="table-wrap">
     <table id="member-table">
-      <thead><tr><th>姓名</th><th class="num">用量（点）</th><th>占比</th><th class="num">次数</th><th class="num">活跃天数</th><th>最近使用</th><th>主要场景</th><th class="num">环比</th></tr></thead>
+      <thead><tr><th>姓名</th><th class="num">用量（点）</th><th class="num">金额</th><th>占比</th><th class="num">次数</th><th class="num">活跃天数</th><th>最近使用</th><th>主要场景</th><th class="num">环比</th></tr></thead>
       <tbody>
         {% for m in members %}
         <tr>
           <td><a class="cell-title" href="{{ url_with('/self-usage', member=m.id, **rng.query) }}">{{ m.name }}</a><small>{{ m.dept }}</small></td>
           <td class="num">{{ m.amount|num }}</td>
+          <td class="num">{{ (m.amount * k.point_price)|money }}</td>
           <td>{{ bar(m.share) }}<small>{{ m.share|num(1) }}%</small></td>
           <td class="num">{{ m.records|num }}</td>
           <td class="num">{{ m.active_days }}</td>
@@ -134,7 +137,7 @@
           <td class="num">{{ delta(m.change) }}</td>
         </tr>
         {% endfor %}
-        <tr data-empty hidden><td colspan="8" class="empty">没有符合筛选条件的成员。</td></tr>
+        <tr data-empty hidden><td colspan="9" class="empty">没有符合筛选条件的成员。</td></tr>
       </tbody>
     </table>
   </div>
