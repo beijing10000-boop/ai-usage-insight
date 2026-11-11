@@ -132,6 +132,21 @@ def test_sync_page_shows_the_live_sync(env):
     assert f"数据截至 {D0} {clock}" in c.get("/dashboard").text  # 侧栏带上几点
 
 
+def test_sync_page_shows_the_data_check(env):
+    c = env.browser("admin@example.com")
+    page = c.get("/sync").text
+    assert "数据核对" in page and "有差异" in page and "艾琳（日志 5 / 详情 0）" in page
+    run = env.ctx.engine.runs()[0][0]
+    assert "对不上" in c.get(f"/logs/{run['id']}").text
+    env.db.x("DELETE FROM reconcile")
+    assert "未核对" in c.get("/sync").text
+    r = c.post("/sync", data={"action": "reconcile"})
+    assert r.headers["location"] == "/sync?done=reconciled#reconcile" and "有差异" in c.get("/sync").text
+    assert "对不上" in env.db.val("SELECT detail FROM audit_log WHERE action='reconcile'")
+    env.db.x("UPDATE reconcile SET mismatched=0")
+    assert "全部一致" in c.get("/sync").text
+
+
 def test_sync_page_actions(env):
     c = env.browser("admin@example.com")
     assert c.post("/sync", data={"action": "check"}).headers["location"] == "/sync?done=connected"

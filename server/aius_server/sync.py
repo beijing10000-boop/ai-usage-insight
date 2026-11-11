@@ -33,7 +33,10 @@ DATASET_LABELS = {
     "detail_member": "人员统计详情",
     "detail_app": "应用统计详情",
     "names": "名称解析",
+    "check": "数据核对",
 }
+SUBJECT_LABELS = {"member": "人员", "app": "应用"}
+RECONCILE_TOLERANCE = 0.011  # 点数是两位小数：一分以内的差算浮点误差
 STATUS_LABELS = {"queued": "等待中", "running": "同步中", "success": "成功", "partial": "部分成功", "failed": "失败", "stopped": "已停止"}
 MAX_DAYS = 366  # 接口一次最多查 365 天；这里按天拉，只是不让一个任务大得离谱
 # 飞书的用量日志只保留最近一年（实测 2026-11-10 能查到的最早一天是 2025-11-11）。比这个天数更早的日子，
@@ -97,6 +100,21 @@ def segments(start: int, end: int) -> list[tuple[str, int, int]]:
         out.append((day, t, min(end, last)))
         t = last + 1
     return out
+
+
+def check_text(rows: list[dict]) -> str:
+    """数据核对的结论（执行步骤里的说明）。rows 是 SyncEngine.reconcile() 返回的各行。"""
+    days = {r["usage_date"] for r in rows}
+    bad = [r for r in rows if r["mismatched"]]
+    if not bad:
+        return f"{len(days)} 天的用量日志和飞书统计详情逐人核对一致（共 {sum(r['log_points'] for r in rows):,.2f} 点）"
+    parts = [
+        f"{r['usage_date']} {r['subject_label']}有 {r['mismatched']} {'人' if r['subject'] == 'member' else '个应用'}对不上"
+        f"（日志 {r['log_points']:,.2f} 点，统计详情 {r['detail_points']:,.2f} 点）"
+        for r in bad[:3]
+    ]
+    ok_days = len(days - {r["usage_date"] for r in bad})
+    return "；".join(parts) + (f" 等 {len(bad)} 处" if len(bad) > 3 else "") + (f"；其余 {ok_days} 天一致" if ok_days else "")
 
 
 def _meta(c: sqlite3.Connection, key: str) -> str | None:
@@ -231,6 +249,7 @@ class SyncEngine:
                 self._step(run_id, day, dataset, pages, rows, "ok", "飞书接口不接受「飞书项目」「CodeM 沙箱应用」这两类，只同步了其余四类应用" if legacy else "")
                 self._save(run_id, done, stats)
             self._resolve_names(run_id, row["start_date"], row["end_date"])
+            self._check(run_id, row["start_date"], row["end_date"])
             finished = len(done) - sum(1 for k in done if k.split("|")[1].startswith("detail") and k.split("|")[0] >= current_day)
             status = "success" if not stats["failed"] else ("partial" if finished else "failed")
         except _Stopped:
@@ -469,6 +488,80 @@ class SyncEngine:
             c.execute(AGG_INSERT.format(where=scope), params)
         return len(rows), pages
 
+    # ---------- 数据核对 ----------
+    def reconcile(self, start: str, end: str) -> list[dict]:
+        """核对 [start, end] 的每一天：每个人（应用）的用量日志合计，是否等于飞书统计详情里他这一天的合计。
+        两份数据是飞书分别给的——日志是一条条的消耗记录（准实时），统计详情是飞书自己按人按天汇总的（T+1）——
+        对得上，说明同步下来的日志没漏、没重复。结果写进 reconcile 表（同一天再核对就覆盖），返回这次核对的各行。
+
+        - 当天不核对：统计详情第二天才有。
+        - 一条日志都没有、又早于日志保留期的日子不核对：飞书的日志只保留一年，统计详情保留得更久。"""
+        end = min(end, (today() - timedelta(days=1)).isoformat())
+        if start > end:
+            return []
+        span = (start, end)
+        logs: dict[tuple[str, str], dict[str, float]] = {}
+        details: dict[tuple[str, str], dict[str, float]] = {}
+        for r in self.db.q("SELECT usage_date, subject, entity_id, SUM(amount) FROM usage_agg WHERE usage_date BETWEEN ? AND ? GROUP BY 1, 2, 3", span):
+            logs.setdefault((r[0], r[1]), {})[r[2]] = r[3]
+        for r in self.db.q(
+            "SELECT usage_date, subject, entity_id, SUM(q1+q2+q3+q4+q5+q6) FROM usage_details WHERE usage_date BETWEEN ? AND ? GROUP BY 1, 2, 3", span
+        ):
+            details.setdefault((r[0], r[1]), {})[r[2]] = r[3]
+        log_days = {day for day, _subject in logs}
+        oldest = (today() - timedelta(days=RETENTION_GUARD_DAYS)).isoformat()
+        now = int(time.time())
+        rows = []
+        for day, subject in sorted(set(logs) | set(details)):
+            if day not in log_days and day < oldest:
+                continue
+            lg, dt = logs.get((day, subject), {}), details.get((day, subject), {})
+            gaps = sorted(((abs(lg.get(i, 0.0) - dt.get(i, 0.0)), i) for i in set(lg) | set(dt)), reverse=True)
+            bad = [{"id": i, "log": round(lg.get(i, 0.0), 2), "detail": round(dt.get(i, 0.0), 2)} for gap, i in gaps if gap > RECONCILE_TOLERANCE]
+            rows.append((day, subject, round(sum(lg.values()), 2), round(sum(dt.values()), 2), len(lg), len(dt), len(bad), dumps(bad[:5]), now))
+        with self.db.tx() as c:
+            c.execute("DELETE FROM reconcile WHERE usage_date BETWEEN ? AND ?", span)
+            c.executemany(
+                "INSERT INTO reconcile(usage_date, subject, log_points, detail_points, log_count, detail_count, mismatched, samples, checked_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
+        return [self._check_view(r) for r in self.db.q("SELECT * FROM reconcile WHERE usage_date BETWEEN ? AND ? ORDER BY usage_date DESC, subject DESC", span)]
+
+    def checks(self, days: int = 30) -> dict:
+        """同步管理页的「数据核对」：最近 days 天（到昨天）的核对结果。"""
+        since = (today() - timedelta(days=days)).isoformat()
+        rows = [self._check_view(r) for r in self.db.q("SELECT * FROM reconcile WHERE usage_date>=? ORDER BY usage_date DESC, subject DESC", (since,))]
+        return {
+            "days": days,
+            "checked_at": self.db.val("SELECT MAX(checked_at) FROM reconcile"),
+            "checked_days": len({r["usage_date"] for r in rows}),
+            "diff": [r for r in rows if r["mismatched"]],
+            "yesterday": (today() - timedelta(days=1)).isoformat(),
+        }
+
+    def _check_view(self, row: sqlite3.Row) -> dict:
+        out = dict(row)
+        out["subject_label"] = SUBJECT_LABELS.get(row["subject"], row["subject"])
+        out["gap"] = round(row["log_points"] - row["detail_points"], 2)
+        names = self._app_name if row["subject"] == "app" else self.directory.user_name
+        out["samples"] = [{**s, "name": names(s["id"])} for s in loads(row["samples"], [])]
+        return out
+
+    def _app_name(self, app_id: str) -> str:
+        return self.db.val("SELECT name FROM app_mapping WHERE app_id=?", (app_id,)) or app_id
+
+    def _check(self, run_id: int, start: str, end: str) -> None:
+        """同步任务的最后一步：核对这段日期，结果记一个执行步骤。核对出错不影响任务本身。"""
+        try:
+            checked = self.reconcile(start, end)
+        except Exception as e:  # 核对是附带的检查，不能让它把同步任务弄成失败
+            log.exception("同步任务 #%s 数据核对出错", run_id)
+            self._step(run_id, end, "check", 0, 0, "failed", f"核对出错：{type(e).__name__} {e}")
+            return
+        if checked:
+            self._step(run_id, checked[0]["usage_date"], "check", 0, 0, "diff" if any(r["mismatched"] for r in checked) else "ok", check_text(checked))
+
     # ---------- 名称解析 ----------
     def _resolve_names(self, run_id: int, start: str, end: str) -> None:
         """通讯录快照里没有的人和部门、还没有名称的应用，查一次记下来。查不到不影响用量数据，页面上先显示 ID。"""
@@ -577,6 +670,12 @@ class SyncEngine:
 
     def _loop(self) -> None:
         self.recover()
+        try:  # 刚升级到有数据核对的版本：把已有的数据核对一遍，同步管理页上马上能看到结果
+            first = self.db.val("SELECT MIN(usage_date) FROM usage_agg")
+            if first and not self.db.val("SELECT 1 FROM reconcile LIMIT 1"):
+                self.reconcile(first, today().isoformat())
+        except Exception:
+            log.exception("核对已有数据出错")
         while True:
             try:
                 self.run_pending()

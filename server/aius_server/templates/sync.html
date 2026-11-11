@@ -167,6 +167,45 @@
     <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>
   </form>
 </section>
+
+<section class="panel" id="reconcile">
+  <div class="section-head">
+    <div><h2>数据核对</h2><p>每次同步完，逐人核对每一天的用量日志合计和飞书的统计详情是否一致。两份数据是飞书分别给的，对得上说明同步下来的日志没漏、没重复。统计详情第二天才有，所以核对到昨天</p></div>
+    <form method="post" action="/sync" class="inline">
+      <input type="hidden" name="action" value="reconcile" />
+      <button type="submit" class="btn small">重新核对</button>
+    </form>
+  </div>
+  {% if not checks.checked_at %}
+  {{ row("核对结果", "还没有核对过。同步完会自动核对；也可以点「重新核对」核对已有的全部数据", "未核对", "untested") }}
+  {% elif not checks.diff %}
+  {{ row("最近 " ~ checks.days ~ " 天", checks.checked_days ~ " 天逐人核对，用量日志和统计详情完全一致 · " ~ checks.checked_at|ago ~ "核对", "全部一致", "ok") }}
+  {% else %}
+  {{ row("最近 " ~ checks.days ~ " 天", checks.checked_days ~ " 天里有 " ~ (checks.diff|map(attribute="usage_date")|unique|list|length) ~ " 天对不上 · " ~ checks.checked_at|ago ~ "核对", "有差异", "warn") }}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>日期</th><th>维度</th><th class="num">用量日志（点）</th><th class="num">统计详情（点）</th><th class="num">相差</th><th class="num">对不上</th><th>差得最多的</th></tr></thead>
+      <tbody>
+        {% for r in checks.diff %}
+        <tr>
+          <td class="nowrap">{{ r.usage_date }}</td>
+          <td class="nowrap">{{ r.subject_label }}</td>
+          <td class="num">{{ r.log_points|num }}</td>
+          <td class="num">{{ r.detail_points|num }}</td>
+          <td class="num">{{ r.gap|num }}</td>
+          <td class="num nowrap">{{ r.mismatched }} {{ "人" if r.subject == "member" else "个" }}</td>
+          <td>{% for s in r.samples[:3] %}{{ s.name }}（日志 {{ s.log|num }} / 详情 {{ s.detail|num }}）{{ "、" if not loop.last }}{% endfor %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="help">怎么处理：对这几天重新手动同步（每天整批替换，不会重复），同步完会自动再核对。
+    {% if checks.diff|selectattr("usage_date", "equalto", checks.yesterday)|list %}昨天的统计详情可能还没出齐（T+1），下一次定时同步会重新拉、再核对。{% endif %}
+    {% if checks.diff|selectattr("detail_count", "equalto", 0)|list %}统计详情为 0 的日子，是在当天同步的（统计详情第二天才有），之后还没再整天同步过：对它重新同步一次即可。{% endif %}
+    重新同步后仍对不上，说明飞书两个接口给的数据本身不一致，可以把日期和人员反馈给飞书。</p>
+  {% endif %}
+</section>
 {% endblock %}
 
 {% block dialogs %}

@@ -35,8 +35,8 @@
           <td class="nowrap">{{ s.usage_date }}</td>
           <td>{{ s.dataset_label }}</td>
           <td class="num">{{ s.pages or "—" }}</td>
-          <td class="num">{{ s.rows|num if s.dataset != "names" else "—" }}</td>
-          <td>{% set look = {"ok": ("ok", "完成"), "kept": ("warn", "保留原数据")}.get(s.status, ("failed", "失败")) %}<span class="status {{ look[0] }}">{{ look[1] }}</span></td>
+          <td class="num">{{ s.rows|num if s.dataset not in ("names", "check") else "—" }}</td>
+          <td>{% set look = {"ok": ("ok", "一致" if s.dataset == "check" else "完成"), "kept": ("warn", "保留原数据"), "diff": ("warn", "对不上")}.get(s.status, ("failed", "失败")) %}<span class="status {{ look[0] }}">{{ look[1] }}</span></td>
           <td>{{ s.message }}</td>
         </tr>
         {% endfor %}

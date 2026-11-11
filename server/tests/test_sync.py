@@ -74,7 +74,7 @@ def test_steps_are_listed_newest_first(empty):
     run = empty.sync(D2, D1)
     ids = [s["id"] for s in run["steps"]]
     assert ids == sorted(ids, reverse=True) and run["steps"][-1]["usage_date"] == D2  # 最早的在最后
-    assert run["steps"][0]["dataset"] == "names"  # 最后做的名称解析在最前面
+    assert [s["dataset"] for s in run["steps"][:2]] == ["check", "names"]  # 最后做的数据核对、名称解析在最前面
 
 
 def test_pagination_collects_every_page(empty):
@@ -152,7 +152,8 @@ def test_old_databases_get_the_progress_column(tmp_path):
     c.commit()
     c.close()
     db = Database(path)
-    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 3
+    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 4
+    assert db.val("SELECT COUNT(*) FROM reconcile") == 0  # v4 的数据核对表也补上了
 
 
 def test_start_validates_dates_and_refuses_a_second_run(empty):
@@ -350,6 +351,37 @@ def test_manual_app_names_are_not_overwritten_by_sync(env):
     env.sync(D1, D1)
     env.ctx.engine.save_app_names({"cli_a": "自动解析的名字"}, "api")
     assert env.ctx.analytics.app_names()["cli_a"] == "我起的名字"
+
+
+# ---------- 数据核对 ----------
+def test_each_sync_checks_the_logs_against_feishu_details_person_by_person(env):
+    # 测试数据里：D1 人员日志有戴维 1 点、艾琳 5 点，统计详情里没有他们；应用 spring_b__c 也只有日志；D2 没有统计详情
+    run = env.ctx.engine.runs()[0][0]
+    step = env.ctx.engine.run(run["id"])["steps"][0]
+    assert step["dataset"] == "check" and step["status"] == "diff" and f"{D1} 人员有 2 人对不上" in step["message"]
+    checks = env.ctx.engine.checks()
+    rows = {(r["usage_date"], r["subject"]): r for r in checks["diff"]}
+    assert set(rows) == {(D1, "member"), (D1, "app"), (D2, "member")} and checks["checked_days"] == 2
+    d1 = rows[(D1, "member")]
+    assert (d1["log_points"], d1["detail_points"], d1["gap"], d1["mismatched"]) == (136, 130, 6, 2)
+    assert [s["name"] for s in d1["samples"]] == ["艾琳", "戴维"]  # 差得多的在前
+
+    # 飞书的统计详情补齐了：重新同步，自动再核对，全部一致
+    env.feishu.usage[("detail", "member", D1)] += [{"entity_type": 2, "entity_id": "ou_dave", "usage_value_ai_notes_quota": 1},
+                                                   {"entity_type": 2, "entity_id": "ou_erin", "usage_value_general_ai_quota": 5}]  # fmt: skip
+    env.feishu.usage[("detail", "app", D1)] += [{"entity_type": 6, "entity_id": "spring_b__c", "usage_value_feishu_aily_quota": 40}]
+    env.feishu.usage[("detail", "member", D2)] = [{"entity_type": 2, "entity_id": "ou_bob", "usage_value_general_ai_quota": 8}]
+    run = env.sync(D2, D1)
+    assert run["steps"][0]["status"] == "ok" and run["steps"][0]["message"].startswith("2 天的用量日志和飞书统计详情逐人核对一致")
+    assert env.ctx.engine.checks()["diff"] == []
+
+
+def test_today_and_days_past_the_log_retention_are_not_checked(empty):
+    old = (today() - timedelta(days=400)).isoformat()
+    empty.db.x("INSERT INTO usage_details(usage_date, subject, entity_type, entity_id, q1, run_id) VALUES(?, 'member', 2, 'ou_bob', 9, 0)", (old,))
+    empty.feishu.usage[("log", "member", D0)] = stamped([log("ou_bob", "d-rd", "知识问答", 1)], D0)
+    empty.sync(D0, D0)
+    assert empty.ctx.engine.reconcile(old, D0) == [] and count(empty, "reconcile") == 0
 
 
 # ---------- 当天增量同步 ----------

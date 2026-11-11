@@ -24,7 +24,7 @@ from .prefs import ConfigError
 from .quota import DIMENSIONS, QuotaError
 from .remote_mcp import connect_prompt
 from .report import WEEKDAYS
-from .sync import STATUS_LABELS, SyncError, today
+from .sync import STATUS_LABELS, SyncError, check_text, today
 
 AUDIT_ACTIONS = {
     "login": "登录",
@@ -33,6 +33,7 @@ AUDIT_ACTIONS = {
     "check": "测试连接",
     "credentials": "修改凭证",
     "directory": "同步通讯录",
+    "reconcile": "数据核对",
     "config": "修改配置",
     "quota": "额度分配",
     "mapping": "应用映射",
@@ -162,6 +163,7 @@ def register(app: FastAPI, c: Ctx) -> None:
             "sync.html", viewer, "sync", request, creds=creds, callback_url=c.s.callback_url,
             check=loads(c.db.meta("feishu_check"), None), running=running, running_text=progress_text(running) if running else "",
             last=runs[0] if runs else None, schedule=c.config.get("sync"), live=c.engine.live_state(), live_running=c.engine.live_running(),
+            checks=c.engine.checks(),
             yesterday=yesterday, today=today().isoformat(),
             directory={"at": c.directory.synced_at(), "users": c.directory.total_headcount(), "depts": len(c.directory.depts()), "error": c.directory.last_error,
                        "hours": c.s.directory_sync_hours},
@@ -258,6 +260,11 @@ def register(app: FastAPI, c: Ctx) -> None:
             live = f"当天数据每 {saved['live_minutes']} 分钟更新" if saved["live_minutes"] else "当天数据不自动更新"
             c.db.audit(viewer.open_id, "config", f"定时同步：{'开启' if saved['enabled'] else '关闭'}，每天 {saved['hour']} 点，同步前 {saved['range_days']} 天，{live}")
             return c.done("/sync", "saved")
+        if action == "reconcile":
+            first = c.analytics.earliest_date()
+            checked = c.engine.reconcile(first, today().isoformat()) if first else []
+            c.db.audit(viewer.open_id, "reconcile", check_text(checked) if checked else "没有可以核对的数据")
+            return c.done("/sync#reconcile", "reconciled")
         if action == "directory":
             if c.s.scheduler:
                 c.directory.sync_now()
