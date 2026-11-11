@@ -93,6 +93,15 @@
 {% if href %}</a>{% else %}</div>{% endif %}
 {% endmacro %}
 
+{# 消耗金额：一万元以内写全（两位小数），往上写成「¥3.35 万」，完整金额在 title 里 #}
+{% macro money_stat(label, cost, hint) %}
+<div class="stat">
+  <div class="label">{{ label }}</div>
+  <div class="value" title="{{ cost|money }}">{{ cost|money if cost < 10000 else "¥" ~ cost|compact }}</div>
+  <div class="hint">{{ hint }}</div>
+</div>
+{% endmacro %}
+
 {# 环比：用量涨跌本身没有好坏，所以不上红绿色，只用箭头和正负号 #}
 {% macro delta(value) %}
 {% if value is none %}<span class="muted" title="上一个周期没有可以比较的数据">—</span>{% else %}<span class="delta">{{ "▲" if value > 0 else ("▼" if value < 0 else "") }} {{ value|delta }}</span>{% endif %}

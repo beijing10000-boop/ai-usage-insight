@@ -153,6 +153,7 @@ class Shell:
     latest: str | None = None
     syncing: bool = False
     nav: list = field(default_factory=list)
+    point_price: float = 0.0  # 1 点折算多少元：页面上的「消耗金额」都按它算
 
     @property
     def initial(self) -> str:

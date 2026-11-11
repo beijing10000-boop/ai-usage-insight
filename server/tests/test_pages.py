@@ -132,6 +132,18 @@ def test_sync_page_shows_the_live_sync(env):
     assert f"数据截至 {D0} {clock}" in c.get("/dashboard").text  # 侧栏带上几点
 
 
+def test_money_is_shown_next_to_points(env):
+    admin = env.browser("admin@example.com")
+    page = admin.get("/dashboard").text  # 两天合计 214 点（人员 144 + 应用 70），0.05 元/点
+    assert "消耗金额" in page and "¥10.70" in page and "按 0.05 元/点折算" in page
+    assert "¥5.00" in page and "¥2.00" in page  # 人员排行里卡萝 100 点，应用排行里 spring_b__c 40 点
+    page = admin.get("/dept-ops?dept=d-rd").text  # 研发部：鲍勃 38 + 戴维 1
+    assert "部门消耗金额" in page and "¥1.95" in page and "¥1.90" in page
+    page = env.browser("bob@example.com").get("/self-usage").text
+    assert "消耗金额" in page and "¥1.90" in page
+    assert "<th class=\"num\">金额</th>" in admin.get("/members").text
+
+
 def test_admin_looks_up_anyone_and_sees_their_usage_page(env):
     c = env.browser("admin@example.com")
     page = c.get("/members").text
