@@ -45,6 +45,7 @@ ICONS = {
     "bean": '<path d="M12 3.5c4.5 0 7.5 3.4 7.5 8s-3 9-7.5 9-7.5-4.4-7.5-9 3-8 7.5-8Z"/><path d="M9 10.5h.01M15 10.5h.01M9.5 14.5c1.4 1.2 3.6 1.2 5 0"/>',
     "table": '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10"/>',
     "person": '<circle cx="12" cy="8" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
+    "people": '<circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0"/><path d="M15.5 5.5a3.3 3.3 0 0 1 0 6.3M17.5 14.2a6 6 0 0 1 3.5 5.3"/>',
     "quota": '<path d="M4 15a8 8 0 1 1 16 0"/><path d="m12 15 3.5-5"/><path d="M4 19h16"/>',
     "sync": '<path d="M20 11.5A8 8 0 0 0 6.3 7"/><path d="M5.5 3.5V7.5h4"/><path d="M4 12.5A8 8 0 0 0 17.7 17"/><path d="M18.5 20.5v-4h-4"/>',
     "list": '<path d="M8.5 6.5h11M8.5 12h11M8.5 17.5h11M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01"/>',
@@ -166,7 +167,7 @@ def navigation(viewer: Viewer) -> list[tuple[str, list[tuple[str, str, str, str]
     if viewer.is_admin or viewer.led:
         insight.append(("dept_ops", "/dept-ops", "部门运营", "dept"))
     if viewer.is_admin:
-        insight += [("doubao", "/doubao-ops", "豆包运营", "bean"), ("data", "/data", "用量明细", "table")]
+        insight += [("doubao", "/doubao-ops", "豆包运营", "bean"), ("data", "/data", "用量明细", "table"), ("members", "/members", "成员用量", "people")]
     insight.append(("self", "/self-usage", "我的用量", "person"))
     groups = [("洞察", insight)]
     if viewer.is_admin:

@@ -14,7 +14,7 @@ from aius_server.core import hash_secret
 from aius_server.feishu import CST
 from conftest import D0, D1, D2, log, login, stamped
 
-ADMIN_PAGES = ["/dashboard", "/doubao-ops", "/data", "/data?tab=details", "/quota", "/sync", "/logs", "/logs/1", "/config", "/roles", "/audit"]
+ADMIN_PAGES = ["/dashboard", "/doubao-ops", "/data", "/data?tab=details", "/members", "/members?q=example", "/quota", "/sync", "/logs", "/logs/1", "/config", "/roles", "/audit"]
 EVERYONE_PAGES = ["/", "/overview", "/self-usage", "/connect"]
 
 
@@ -130,6 +130,31 @@ def test_sync_page_shows_the_live_sync(env):
     page = c.get("/sync").text
     assert f"数据截至 {clock}" in page and "新拉到 1 条" in page and "每 10 分钟更新" in page
     assert f"数据截至 {D0} {clock}" in c.get("/dashboard").text  # 侧栏带上几点
+
+
+def test_admin_looks_up_anyone_and_sees_their_usage_page(env):
+    c = env.browser("admin@example.com")
+    page = c.get("/members").text
+    assert 'aria-current="page"' in page and "成员用量" in page and "本月用量最多的人" in page
+    if D1[:7] == D0[:7]:  # 测试数据在昨天：昨天还在本月时，排行里有人
+        assert "卡萝" in page and "/self-usage?member=ou_carol" in page
+    # 只搜到一个人：直接打开他的用量页
+    for q in ("艾琳", "Erin", "erin@example.com", "ou_erin"):
+        r = c.get("/members", params={"q": q})
+        assert r.status_code == 303 and r.headers["location"] == "/self-usage?member=ou_erin", q
+    page = c.get("/members", params={"q": "example.com"}).text  # 搜到好几个：列出来让人选
+    assert "找到 7 个人" in page and "/self-usage?member=ou_bob" in page
+    assert "没有找到「不存在的人」" in c.get("/members", params={"q": "不存在的人"}).text
+    # 他的用量页：和他自己看到的一样，导航停在「成员用量」，可以直接换一个人
+    page = c.get("/self-usage?member=ou_bob").text
+    assert "鲍勃 的用量" in page and "和他自己在「我的用量」里看到的一样" in page and 'id="switch-member"' in page
+    assert re.search(r'class="nav-link active" href="/members"', page)
+    own = env.browser("bob@example.com").get("/self-usage").text
+    for part in ("消耗点数", "用在哪里", "额度类型", "使用明细"):
+        assert part in page and part in own
+    # 部门负责人看本部门成员：导航停在「部门运营」，没有换人的搜索框（那是运营管理员的）
+    page = env.browser("bob@example.com").get("/self-usage?member=ou_dave").text
+    assert re.search(r'class="nav-link active" href="/dept-ops"', page) and 'id="switch-member"' not in page
 
 
 def test_sync_page_shows_the_data_check(env):
