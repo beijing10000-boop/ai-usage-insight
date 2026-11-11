@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import range_bar, stat, money_stat, delta, change_stat, chart, shares, paging, granularity, allowance_stat, suggest_input %}
+{% from "_macros.html" import range_bar, stat, money_stat, delta, change_stat, chart, shares, paging, granularity, allowance_stat, member_search %}
 {% set title = "我的用量" if mine else p.name ~ " 的用量" %}
 {% set section = "洞察" %}
 {% set unit = {"day": "每天", "week": "每周", "month": "每月"}[by] %}
@@ -17,7 +17,7 @@
 {% if shell.viewer.is_admin %}
 <form method="get" action="/members" class="add-row">
   <label class="offscreen-label" for="switch-member">换一个人</label>
-  {{ suggest_input("switch-member", "q", "user", "换一个人：输入姓名，从列表里选") }}
+  {{ member_search("switch-member", "换一个人：输入姓名的一部分，下面会实时列出匹配的人") }}
   <button type="submit" class="btn">查看</button>
 </form>
 {% endif %}

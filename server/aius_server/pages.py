@@ -443,6 +443,30 @@ def register(app: FastAPI, c: Ctx) -> None:
             month_label=month_name(month) + ("" if complete else f"（截至 {int(end[5:7])}/{int(end[8:10])}）"),
         )  # fmt: skip
 
+    @app.get("/members/search")
+    def members_search(request: Request, q: str = ""):
+        """成员用量搜索框的实时匹配：边输入边出结果（姓名、英文名、邮箱的任意一段），带部门和本月用量。
+        完全同名的排最前，其余按本月用量从多到少，最多 10 个。"""
+        viewer = c.user(request)
+        if not viewer or not viewer.is_admin:
+            return JSONResponse({"items": []}, status_code=403 if viewer else 401)
+        q = q.strip()[:100]
+        candidates = c.directory.search_users(q, limit=60) if q else []
+        start, end, _complete = an.month_span(today().isoformat()[:7])
+        amounts = an.member_amounts([u.open_id for u in candidates], start, end)
+        price = c.config.point_price
+        ranked = sorted(candidates, key=lambda u: (u.name.casefold() != q.casefold(), -amounts.get(u.open_id, 0.0)))[:10]
+        return {
+            "items": [
+                {"id": u.open_id, "name": u.name, "en_name": u.en_name if u.en_name != u.name else "",
+                 "dept_path": c.directory.dept_path(u.dept_ids[0]) if u.dept_ids else "未归属部门",
+                 "usage": f"本月 {web.fmt_num(amounts.get(u.open_id, 0.0))} 点 · {web.fmt_money(amounts.get(u.open_id, 0.0) * price)}",
+                 "href": web.url_with("/self-usage", member=u.open_id)}
+                for u in ranked
+            ],
+            "more": len(candidates) > len(ranked),
+        }  # fmt: skip
+
     # ---------- 输入联想 ----------
     @app.get("/suggest")
     def suggest(request: Request, kind: str = "dept", q: str = ""):

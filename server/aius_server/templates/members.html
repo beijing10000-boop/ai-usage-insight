@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import suggest_input %}
+{% from "_macros.html" import member_search %}
 {% set title = "成员用量" %}
 {% set section = "洞察" %}
 
@@ -12,7 +12,7 @@
   </div>
   <form method="get" action="/members" class="add-row">
     <label class="offscreen-label" for="member-q">要查看的人</label>
-    {{ suggest_input("member-q", "q", "user", "输入姓名、英文名或邮箱，从列表里选", value=q) }}
+    {{ member_search("member-q", "输入姓名、英文名或邮箱的一部分，下面会实时列出匹配的人", value=q) }}
     <button type="submit" class="btn primary">查看</button>
   </form>
   {% if q %}
