@@ -30,7 +30,7 @@ from .insight import Insight
 from .prefs import Config
 from .quota import Quotas
 from .remote_mcp import build_remote_mcp
-from .report import WeeklyReport
+from .report import UsageReports
 from .scheduler import Scheduler
 from .sync import SyncEngine
 from .vault import Vault
@@ -63,7 +63,7 @@ def create_app(settings: Settings | None = None, feishu=None) -> FastAPI:
     config = Config(db)
     engine = SyncEngine(db, fs, directory)
     analytics = Analytics(db, directory, config)
-    report = WeeklyReport(db, fs, directory, config, s.public_url)
+    report = UsageReports(db, fs, directory, analytics, config, s.public_url, engine)
     ctx = Ctx(
         s=s, db=db, fs=fs, directory=directory, config=config, access=Access(s, db, directory), engine=engine,
         analytics=analytics, quotas=Quotas(db, directory), insight=Insight(s, analytics, vault), report=report, vault=vault,

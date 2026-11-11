@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # 从 usage_logs 生成 usage_agg 的那条语句；{where} 是要汇总的范围（同步时是刚写入的那个「日期 × 主体」）
 AGG_INSERT = (
@@ -238,8 +238,9 @@ CREATE INDEX IF NOT EXISTS audit_at ON audit_log(at);
 -- 周报推送记录：一行 = 一次推送（定时、手动全量或测试）
 CREATE TABLE IF NOT EXISTS report_runs (
     id          INTEGER PRIMARY KEY,
-    week_start  TEXT NOT NULL,
-    week_end    TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'weekly',  -- daily | weekly | monthly（v5）
+    week_start  TEXT NOT NULL,                 -- 这一期的第一天（名字沿用周报时代的）
+    week_end    TEXT NOT NULL,                 -- 这一期的最后一天
     trigger     TEXT NOT NULL,                 -- schedule | manual | test
     actor       TEXT NOT NULL DEFAULT '',
     status      TEXT NOT NULL,                 -- running | success | partial | failed
@@ -264,6 +265,8 @@ class Database:
         columns = {r["name"] for r in c.execute("PRAGMA table_info(sync_runs)")}
         if "progress" not in columns:
             c.execute("ALTER TABLE sync_runs ADD COLUMN progress TEXT NOT NULL DEFAULT ''")
+        if "kind" not in {r["name"] for r in c.execute("PRAGMA table_info(report_runs)")}:  # v5：日报 / 周报 / 月报
+            c.execute("ALTER TABLE report_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'weekly'")
         # v3 加的汇总表：老库里已经同步过的日志，一次性汇总过来
         if c.execute("SELECT 1 FROM usage_logs LIMIT 1").fetchone() and not c.execute("SELECT 1 FROM usage_agg LIMIT 1").fetchone():
             with self.tx() as t:

@@ -83,9 +83,12 @@ def test_config_validation():
         with pytest.raises(ConfigError):
             clean("sync", {"live_minutes": bad})
     assert clean("pricing", {"point_price": "0.05"}) == {"point_price": 0.05}
-    assert clean("report", {"since": ""}) == {"since": ""}
+    assert clean("report", {"scope": "all"}) == {"scope": "all"}
+    assert clean("report_weekly", {"enabled": 1, "weekday": "3", "hour": "10", "day": "5"}) == {"enabled": True, "weekday": 3, "hour": 10}  # 周报没有「几号」
+    assert clean("report_monthly", {"day": "28", "weekday": "2"}) == {"day": 28}
     for key, patch in (("sync", {"hour": 24}), ("sync", {"range_days": 0}), ("pricing", {"point_price": 0}), ("pricing", {"point_price": "x"}),
-                       ("report", {"weekday": 8}), ("report", {"scope": "nobody"}), ("report", {"since": "2026-13-01"}), ("nope", {})):  # fmt: skip
+                       ("report_weekly", {"weekday": 8}), ("report", {"scope": "nobody"}), ("report_monthly", {"day": 29}),
+                       ("report_daily", {"hour": -1}), ("nope", {})):  # fmt: skip
         with pytest.raises(ConfigError):
             clean(key, patch)
 

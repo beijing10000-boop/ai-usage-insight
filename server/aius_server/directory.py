@@ -125,6 +125,10 @@ class Directory:
         """这个人负责的部门（只算直接负责的，不含它们的下级）。"""
         return list(self._led.get(open_id, ()))
 
+    def leaders(self) -> dict[str, list[str]]:
+        """所有部门负责人：open_id → 他直接负责的部门。"""
+        return {open_id: list(depts) for open_id, depts in self._led.items() if depts}
+
     def search_depts(self, query: str, limit: int = 10) -> list[Dept]:
         q = query.strip().casefold()
         if not q:

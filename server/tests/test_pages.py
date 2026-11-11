@@ -14,7 +14,7 @@ from aius_server.core import hash_secret
 from aius_server.feishu import CST
 from conftest import D0, D1, D2, log, login, stamped
 
-ADMIN_PAGES = ["/dashboard", "/doubao-ops", "/data", "/data?tab=details", "/members", "/members?q=example", "/quota", "/sync", "/logs", "/logs/1", "/config", "/roles", "/audit"]
+ADMIN_PAGES = ["/dashboard", "/doubao-ops", "/data", "/data?tab=details", "/members", "/members?q=example", "/quota", "/sync", "/logs", "/logs/1", "/reports", "/config", "/roles", "/audit"]
 EVERYONE_PAGES = ["/", "/overview", "/self-usage", "/connect"]
 
 
@@ -252,10 +252,28 @@ def test_config_page_actions(env):
     c.post("/config", data={"action": "pricing", "point_price": "0.1"})
     assert env.ctx.config.point_price == 0.1
     assert c.post("/config", data={"action": "pricing", "point_price": "-1"}).status_code == 400
-    c.post("/config", data={"action": "report", "enabled": "1", "weekday": "3", "hour": "10", "scope": "all", "since": "2026-01-01"})
-    assert env.ctx.config.get("report")["weekday"] == 3 and env.ctx.config.get("report")["scope"] == "all"
-    assert c.post("/config", data={"action": "report_test"}).headers["location"] == "/config?done=report_test#report"
+
+
+def test_reports_page_actions(env):
+    c = env.browser("admin@example.com")
+    page = c.get("/reports").text
+    assert all(f'id="{k}"' in page for k in ("daily", "weekly", "monthly")) and page.count("已关闭") == 3  # 默认三个都关着
+    assert 'class="nav-link active" href="/reports"' in page
+    r = c.post("/reports", data={"action": "save", "kind": "weekly", "enabled": "1", "weekday": "3", "hour": "10"})
+    assert r.headers["location"] == "/reports?done=saved#weekly"
+    assert env.ctx.config.get("report_weekly") == {"enabled": True, "weekday": 3, "hour": 10, "last_push_date": ""}
+    c.post("/reports", data={"action": "save", "kind": "monthly", "enabled": "0", "day": "5", "hour": "8"})
+    assert env.ctx.config.get("report_monthly")["day"] == 5 and not env.ctx.config.get("report_monthly")["enabled"]
+    assert c.post("/reports", data={"action": "save", "kind": "monthly", "day": "31", "hour": "8"}).status_code == 400
+    assert c.post("/reports", data={"action": "save", "kind": "yearly"}).status_code == 400
+    c.post("/reports", data={"action": "scope", "scope": "all"})
+    assert env.ctx.config.get("report")["scope"] == "all"
+    assert c.post("/reports", data={"action": "test", "kind": "daily"}).headers["location"] == "/reports?done=report_test#daily"
     assert [oid for oid, _card in env.feishu.sent] == ["ou_admin"]
+    runs = c.get("/reports").text
+    assert "日报" in runs and "测试" in runs and "已开启" in runs
+    assert "日报测试发送给自己" in env.db.val("SELECT detail FROM audit_log WHERE action='report' ORDER BY id DESC LIMIT 1")
+    assert env.browser("bob@example.com").post("/reports", data={"action": "test", "kind": "daily"}).status_code == 403
 
 
 def test_roles_page(env):
