@@ -1,9 +1,8 @@
-"""页面上能改的运营配置：定时同步、点数单价、每人每月额度、周报推送。存在数据库 settings 表里，缺的项用默认值。"""
+"""页面上能改的运营配置：定时同步、点数单价、每人每月额度、报表发送。存在数据库 settings 表里，缺的项用默认值。"""
 
 from __future__ import annotations
 
 import time
-from datetime import date
 from typing import Any
 
 from .db import Database, dumps, loads
@@ -17,9 +16,12 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "pricing": {"point_price": 0.05},
     # 每人每月的基础额度（点）：飞书的个人 AI 额度按自然月发放、每月 1 日重置。0 = 没有设置，页面上不显示月度额度
     "allowance": {"per_member": 0},
-    # AI 用量周报：weekday 1..7 = 周一..周日；scope: active（上周有用量的人）| all（通讯录里所有人）；
-    # since: 累计用量从哪天算起，空 = 当年 1 月 1 日
-    "report": {"enabled": False, "weekday": 1, "hour": 9, "scope": "active", "since": "", "last_push_date": ""},
+    # 报表发送（日报 / 周报 / 月报，各自一个开关）。scope 三种报表共用：active（这一期有用量的人，部门负责人只要部门有用量也发）
+    # | all（通讯录里所有人）。日报发昨天的；周报 weekday 1..7 = 周一..周日，发上一周；月报 day 1..28 号，发上个月
+    "report": {"scope": "active"},
+    "report_daily": {"enabled": False, "hour": 9, "last_push_date": ""},
+    "report_weekly": {"enabled": False, "weekday": 1, "hour": 9, "last_push_date": ""},
+    "report_monthly": {"enabled": False, "day": 1, "hour": 9, "last_push_date": ""},
 }
 
 
@@ -35,16 +37,6 @@ def _int(value: Any, low: int, high: int, what: str) -> int:
     if not low <= n <= high:
         raise ConfigError(f"{what}要在 {low} 到 {high} 之间")
     return n
-
-
-def _date(value: Any, what: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        return date.fromisoformat(text).isoformat()
-    except ValueError:
-        raise ConfigError(f"{what}要写成 2026-01-31 这样的日期") from None
 
 
 def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -80,18 +72,19 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError("每人每月额度不能是负数")
         out["per_member"] = round(value, 2)
     elif key == "report":
-        if "enabled" in patch:
-            out["enabled"] = bool(patch["enabled"])
-        if "weekday" in patch:
-            out["weekday"] = _int(patch["weekday"], 1, 7, "推送日")
-        if "hour" in patch:
-            out["hour"] = _int(patch["hour"], 0, 23, "推送时间")
         if "scope" in patch:
             if patch["scope"] not in ("active", "all"):
-                raise ConfigError("推送范围只能是「上周有用量的人」或「所有人」")
+                raise ConfigError("发送范围只能是「这一期有用量的人」或「通讯录里所有人」")
             out["scope"] = patch["scope"]
-        if "since" in patch:
-            out["since"] = _date(patch["since"], "累计起始日")
+    elif key in ("report_daily", "report_weekly", "report_monthly"):
+        if "enabled" in patch:
+            out["enabled"] = bool(patch["enabled"])
+        if "hour" in patch:
+            out["hour"] = _int(patch["hour"], 0, 23, "发送时间")
+        if key == "report_weekly" and "weekday" in patch:
+            out["weekday"] = _int(patch["weekday"], 1, 7, "发送日")
+        if key == "report_monthly" and "day" in patch:
+            out["day"] = _int(patch["day"], 1, 28, "发送日（每月几号）")
     else:
         raise ConfigError("没有这个配置项")
     return out

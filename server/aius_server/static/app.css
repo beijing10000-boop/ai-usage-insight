@@ -454,6 +454,20 @@ progress.meter.failed::-moz-progress-bar {
   flex: 1;
   min-width: 200px;
 }
+/* 报表发送：三种报表并排，每张卡片底部是测试 / 全量发送 */
+.report-kinds .panel {
+  display: flex;
+  flex-direction: column;
+}
+.report-kinds .panel form:not(.inline) {
+  flex: 1;
+}
+.report-actions {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
 /* 成员用量的找人框：输入框下面的实时匹配列表 */
 .member-search {
   position: relative;

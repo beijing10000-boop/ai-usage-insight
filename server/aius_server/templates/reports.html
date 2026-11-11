@@ -1,0 +1,114 @@
+{% extends "_base.html" %}
+{% set title = "报表发送" %}
+{% set section = "运营" %}
+{% set what = {
+  "daily": "每天发昨天的用量，和上周同一天比（和前一天比会被周末带偏）",
+  "weekly": "每周发上一周（周一到周日）的用量，和再上一周比",
+  "monthly": "每月发上个月的用量，和再上个月比；错过了发送日会在当月补发",
+} %}
+
+{% block content %}
+<section class="panel" id="scope">
+  <div class="section-head">
+    <div><h2>报表发送</h2><p>用飞书卡片把 AI 用量发到每个人的飞书。每个人收到自己的用量：消耗点数、金额、和上一期比、使用次数、常用场景{{ "、本月基础额度用到了哪儿" if allowance }}；
+      部门负责人再加上他负责的部门（含下级）的用量、活跃人数、用量最多的 5 个人和主要场景。卡片最下面是「详情请查看」和平台的网址</p></div>
+  </div>
+  <p class="notice">发送用应用的机器人：需要在飞书开放平台给应用开启「机器人」能力，并开通权限 <code>im:message:send_as_bot</code>。每种报表先点「测试发送给我」，在飞书里看过卡片再打开开关。
+    现在通讯录里有 <b>{{ leaders }}</b> 位部门负责人。有同步任务在跑时（数据正在整批替换）先不发，等它跑完再发。</p>
+  <form method="post" action="/reports" class="add-row">
+    <input type="hidden" name="action" value="scope" />
+    <label for="r-scope">发送范围（三种报表共用）</label>
+    <select id="r-scope" name="scope">
+      <option value="active"{{ " selected" if scope == "active" }}>这一期有用量的人（部门负责人只要部门有用量也发）</option>
+      <option value="all"{{ " selected" if scope == "all" }}>通讯录里所有人（没用量的人卡片上写「没有用量」）</option>
+    </select>
+    <button type="submit" class="btn">保存</button>
+  </form>
+</section>
+
+<div class="grid3 report-kinds">
+  {% for k in kinds %}
+  {% set cfg = k.cfg %}
+  <section class="panel" id="{{ k.key }}">
+    <div class="section-head">
+      <div><h2>{{ k.name }}</h2><p>{{ what[k.key] }}</p></div>
+      <span class="status {{ 'ok' if cfg.enabled else 'muted' }}">{{ "已开启" if cfg.enabled else "已关闭" }}</span>
+    </div>
+    <p class="help">下一期：<b>{{ k.period.label }}</b>（{{ k.period.start }}{% if k.period.end != k.period.start %} ~ {{ k.period.end }}{% endif %}）{% if cfg.last_push_date %}；上次定时发送是 {{ cfg.last_push_date }}{% endif %}</p>
+    <form method="post" action="/reports">
+      <input type="hidden" name="action" value="save" /><input type="hidden" name="kind" value="{{ k.key }}" />
+      <div class="fields">
+        <div>
+          <label for="{{ k.key }}-enabled">定时发送</label>
+          <select id="{{ k.key }}-enabled" name="enabled">
+            <option value="1"{{ " selected" if cfg.enabled }}>开启</option>
+            <option value="0"{{ " selected" if not cfg.enabled }}>关闭</option>
+          </select>
+        </div>
+        {% if k.key == "weekly" %}
+        <div>
+          <label for="weekly-weekday">发送日</label>
+          <select id="weekly-weekday" name="weekday">
+            {% for key, name in weekdays.items() %}<option value="{{ key }}"{{ " selected" if cfg.weekday == key }}>每{{ name }}</option>{% endfor %}
+          </select>
+        </div>
+        {% elif k.key == "monthly" %}
+        <div>
+          <label for="monthly-day">发送日</label>
+          <select id="monthly-day" name="day">
+            {% for d in range(1, 29) %}<option value="{{ d }}"{{ " selected" if cfg.day == d }}>每月 {{ d }} 日</option>{% endfor %}
+          </select>
+        </div>
+        {% endif %}
+        <div>
+          <label for="{{ k.key }}-hour">发送时间</label>
+          <select id="{{ k.key }}-hour" name="hour">
+            {% for h in range(24) %}<option value="{{ h }}"{{ " selected" if cfg.hour == h }}>{{ "%02d"|format(h) }}:00</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>
+    </form>
+    <div class="actions report-actions">
+      <form method="post" action="/reports" class="inline">
+        <input type="hidden" name="action" value="test" /><input type="hidden" name="kind" value="{{ k.key }}" />
+        <button type="submit" class="btn small">{{ icon("send") }}测试发送给我</button>
+      </form>
+      <form method="post" action="/reports" class="inline" data-confirm="现在就把{{ k.period.label }}的{{ k.name }}发给所有人？"
+        data-confirm-message="会按上面保存的发送范围，给每个人发一张飞书卡片。发出去的消息不能撤回。" data-confirm-text="发送">
+        <input type="hidden" name="action" value="push" /><input type="hidden" name="kind" value="{{ k.key }}" />
+        <button type="submit" class="btn small">立即全量发送</button>
+      </form>
+    </div>
+  </section>
+  {% endfor %}
+</div>
+
+<section class="panel" id="runs">
+  <div class="section-head"><div><h2>发送记录</h2><p>最近 30 次，最新的在最上面</p></div></div>
+  {% if runs %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>报表</th><th>这一期</th><th>方式</th><th>结果</th><th class="num">人数</th><th class="num">成功</th><th class="num">失败</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td class="nowrap">{{ r.started_at|ts }}</td>
+          <td class="nowrap">{{ r.kind_name }}</td>
+          <td class="nowrap">{{ r.week_start }}{% if r.week_end != r.week_start %} ~ {{ r.week_end }}{% endif %}</td>
+          <td>{{ {"schedule": "定时", "manual": "手动全量", "test": "测试"}.get(r.trigger, r.trigger) }}<small>{{ r.actor_name }}</small></td>
+          <td><span class="status {{ r.status }}">{{ {"running": "发送中", "success": "成功", "partial": "部分成功", "failed": "失败"}.get(r.status, r.status) }}</span></td>
+          <td class="num">{{ r.total }}</td>
+          <td class="num">{{ r.sent }}</td>
+          <td class="num">{{ r.failed or "—" }}</td>
+          <td>{{ r.error }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有发送过报表。</p>
+  {% endif %}
+</section>
+{% endblock %}

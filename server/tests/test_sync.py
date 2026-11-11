@@ -149,11 +149,17 @@ def test_old_databases_get_the_progress_column(tmp_path):
               "heartbeat_at INTEGER, done_units TEXT NOT NULL DEFAULT '[]', stats TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', "
               "resume_count INTEGER NOT NULL DEFAULT 0, stop_requested INTEGER NOT NULL DEFAULT 0)")  # fmt: skip
     c.execute("INSERT INTO sync_runs(trigger, actor, start_date, end_date, status, created_at) VALUES('manual','x','2026-11-09','2026-11-09','running',1)")
+    # v5 之前的周报记录没有 kind 列
+    c.execute("CREATE TABLE report_runs (id INTEGER PRIMARY KEY, week_start TEXT NOT NULL, week_end TEXT NOT NULL, trigger TEXT NOT NULL, "
+              "actor TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0, "
+              "failed INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL, finished_at INTEGER)")  # fmt: skip
+    c.execute("INSERT INTO report_runs(week_start, week_end, trigger, status, started_at) VALUES('2026-11-02','2026-11-08','test','success',1)")
     c.commit()
     c.close()
     db = Database(path)
-    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 4
+    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 5
     assert db.val("SELECT COUNT(*) FROM reconcile") == 0  # v4 的数据核对表也补上了
+    assert db.val("SELECT kind FROM report_runs WHERE id=1") == "weekly"  # v5：老的周报记录算周报
 
 
 def test_start_validates_dates_and_refuses_a_second_run(empty):

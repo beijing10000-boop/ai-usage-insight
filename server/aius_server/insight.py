@@ -150,7 +150,7 @@ class Insight:
             return {"answer": "这个时间范围内还没有用量数据。请先在「同步管理」里同步数据，或者换一个时间范围再问。", "model": False}
         llm = self.vault.llm()
         if not llm["api_key"]:
-            return {"answer": self.fallback(data, "（还没有配置 AI 模型，以上是按数据直接整理的摘要。运营管理员在「映射与推送 → AI 模型」里配置后，可以用自然语言追问。）"), "model": False}
+            return {"answer": self.fallback(data, "（还没有配置 AI 模型，以上是按数据直接整理的摘要。运营管理员在「映射与配置 → AI 模型」里配置后，可以用自然语言追问。）"), "model": False}
         try:
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},

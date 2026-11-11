@@ -23,7 +23,7 @@ from .feishu import ROOT
 from .insight import Insight
 from .prefs import Config
 from .quota import Quotas
-from .report import WeeklyReport
+from .report import UsageReports
 from .sync import MAX_DAYS, SyncEngine, today
 from .vault import Vault
 
@@ -49,8 +49,8 @@ FLASH = {
     "allowance_saved": ("success", "每人每月额度已保存"),
     "mapping_saved": ("success", "应用名称已保存"),
     "mapping_deleted": ("success", "已删除手工映射"),
-    "report_test": ("success", "测试周报已发给你，去飞书里看一下"),
-    "report_pushed": ("success", "周报已开始推送，稍后刷新可以看到推送记录"),
+    "report_test": ("success", "测试报表已发给你，去飞书里看一下"),
+    "report_pushed": ("success", "报表已开始发送，稍后刷新可以看到发送记录"),
     "revoked": ("success", "令牌已撤销"),
     "granted": ("success", "已设为运营管理员"),
     "role_removed": ("success", "已取消运营管理员"),
@@ -125,7 +125,7 @@ class Ctx:
     analytics: Analytics
     quotas: Quotas
     insight: Insight
-    report: WeeklyReport
+    report: UsageReports
     vault: Vault
 
     def __post_init__(self) -> None:

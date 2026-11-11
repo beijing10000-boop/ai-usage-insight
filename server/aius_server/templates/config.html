@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% set title = "映射与推送" %}
+{% set title = "映射与配置" %}
 {% set section = "运营" %}
 
 {% block content %}
@@ -102,86 +102,4 @@
   </form>
 </section>
 
-<section class="panel" id="report">
-  <div class="section-head">
-    <div><h2>AI 用量周报</h2><p>每周给每个人发一张飞书卡片：上周用了多少点、折算费用、用在哪几类额度、最常用的 5 个场景、累计用量</p></div>
-    <div class="actions">
-      <form method="post" action="/config" class="inline">
-        <input type="hidden" name="action" value="report_test" />
-        <button type="submit" class="btn small">{{ icon("send") }}测试发送给我</button>
-      </form>
-      <form method="post" action="/config" class="inline" data-confirm="现在就推送 {{ period.start }} ~ {{ period.end }} 的周报？" data-confirm-message="会按下面保存的推送范围，给每个人发一张飞书卡片。发出去的消息不能撤回。" data-confirm-text="推送">
-        <input type="hidden" name="action" value="report_push" />
-        <button type="submit" class="btn small">立即全量推送</button>
-      </form>
-    </div>
-  </div>
-  <p class="notice">推送用应用的机器人发消息：需要在飞书开放平台给应用开启「机器人」能力，并开通权限 <code>im:message:send_as_bot</code>。先点「测试发送给我」确认能收到。</p>
-  <form method="post" action="/config">
-    <input type="hidden" name="action" value="report" />
-    <div class="fields three">
-      <div>
-        <label for="r-enabled">定时推送</label>
-        <select id="r-enabled" name="enabled">
-          <option value="1"{{ " selected" if report.enabled }}>开启</option>
-          <option value="0"{{ " selected" if not report.enabled }}>关闭</option>
-        </select>
-      </div>
-      <div>
-        <label for="r-weekday">推送日</label>
-        <select id="r-weekday" name="weekday">
-          {% for key, name in weekdays.items() %}<option value="{{ key }}"{{ " selected" if report.weekday == key }}>每{{ name }}</option>{% endfor %}
-        </select>
-      </div>
-      <div>
-        <label for="r-hour">推送时间</label>
-        <select id="r-hour" name="hour">
-          {% for h in range(24) %}<option value="{{ h }}"{{ " selected" if report.hour == h }}>{{ "%02d"|format(h) }}:00</option>{% endfor %}
-        </select>
-      </div>
-      <div>
-        <label for="r-scope">推送范围</label>
-        <select id="r-scope" name="scope">
-          <option value="active"{{ " selected" if report.scope == "active" }}>上周有用量的人</option>
-          <option value="all"{{ " selected" if report.scope == "all" }}>通讯录里所有人</option>
-        </select>
-      </div>
-      <div>
-        <label for="r-since">累计起始日</label>
-        <input id="r-since" name="since" type="date" value="{{ report.since }}" />
-        <p class="help">卡片上的「累计」从这天算起；不填是当年 1 月 1 日。</p>
-      </div>
-      <div>
-        <label>下一期内容</label>
-        <p class="help">{{ period.start }} ~ {{ period.end }} 的用量{% if report.last_push_date %}；上次定时推送是 {{ report.last_push_date }}{% endif %}</p>
-      </div>
-    </div>
-    <div class="form-actions"><button type="submit" class="btn primary">保存推送配置</button></div>
-  </form>
-
-  <h3>推送记录</h3>
-  {% if runs %}
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>时间</th><th>周报周期</th><th>方式</th><th>结果</th><th class="num">人数</th><th class="num">成功</th><th class="num">失败</th><th>说明</th></tr></thead>
-      <tbody>
-        {% for r in runs %}
-        <tr>
-          <td class="nowrap">{{ r.started_at|ts }}</td>
-          <td class="nowrap">{{ r.week_start }} ~ {{ r.week_end }}</td>
-          <td>{{ {"schedule": "定时", "manual": "手动全量", "test": "测试"}.get(r.trigger, r.trigger) }}<small>{{ r.actor_name }}</small></td>
-          <td><span class="status {{ r.status }}">{{ {"running": "推送中", "success": "成功", "partial": "部分成功", "failed": "失败"}.get(r.status, r.status) }}</span></td>
-          <td class="num">{{ r.total }}</td>
-          <td class="num">{{ r.sent }}</td>
-          <td class="num">{{ r.failed or "—" }}</td>
-          <td>{{ r.error }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <p class="empty">还没有推送过周报。</p>
-  {% endif %}
-</section>
 {% endblock %}

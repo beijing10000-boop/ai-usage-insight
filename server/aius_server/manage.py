@@ -23,6 +23,7 @@ from .pages import Pager, page_number
 from .prefs import ConfigError
 from .quota import DIMENSIONS, QuotaError
 from .remote_mcp import connect_prompt
+from .report import KINDS as REPORT_KINDS
 from .report import WEEKDAYS
 from .sync import STATUS_LABELS, SyncError, check_text, today
 
@@ -37,7 +38,7 @@ AUDIT_ACTIONS = {
     "config": "修改配置",
     "quota": "额度分配",
     "mapping": "应用映射",
-    "report": "周报推送",
+    "report": "报表发送",
     "token_create": "生成令牌",
     "token_revoke": "撤销令牌",
     "role_grant": "授予管理员",
@@ -343,20 +344,18 @@ def register(app: FastAPI, c: Ctx) -> None:
                  "source": {"page": "页面填写", "env": "环境变量", "": ""}[llm["source"]], "on_page": bool(c.vault.get("llm_api_key"))}  # fmt: skip
         return c.page(
             "config.html", viewer, "config", request, apps=apps, unnamed=sum(1 for a in apps if not a["name"]), aily=bool(c.vault.aily()[0]), model=model,
-            price=c.config.point_price, report=c.config.get("report"), period=c.report.period(), runs=c.report.runs(), weekdays=WEEKDAYS,
-            sources={"manual": "手工", "api": "开放平台", "aily": "Aily"},
+            price=c.config.point_price, sources={"manual": "手工", "api": "开放平台", "aily": "Aily"},
         )  # fmt: skip
 
     @app.post("/config")
     def config_post(
         request: Request, action: str = Form(...), app_id: str = Form(""), name: str = Form(""), point_price: str = Form(""),
-        enabled: str = Form(""), weekday: str = Form(""), hour: str = Form(""), scope: str = Form(""), since: str = Form(""),
         llm_base_url: str = Form(""), llm_api_key: str = Form(""), llm_model: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
             return bad
-        back = ("回到映射与推送", "/config")
+        back = ("回到映射与配置", "/config")
         if action == "llm_clear":
             c.vault.set({"llm_base_url": "", "llm_api_key": "", "llm_model": ""}, viewer.open_id)
             c.db.audit(viewer.open_id, "config", "清除 AI 模型配置")
@@ -389,23 +388,68 @@ def register(app: FastAPI, c: Ctx) -> None:
                 saved = c.config.save("pricing", {"point_price": point_price}, viewer.open_id)
                 c.db.audit(viewer.open_id, "config", f"点数单价改为 {saved['point_price']} 元/点")
                 return c.done("/config#pricing", "saved")
-            if action == "report":
-                saved = c.config.save("report", {"enabled": enabled == "1", "weekday": weekday, "hour": hour, "scope": scope, "since": since}, viewer.open_id)
-                c.db.audit(viewer.open_id, "config", f"周报推送：{'开启' if saved['enabled'] else '关闭'}，{WEEKDAYS[saved['weekday']]} {saved['hour']} 点")
-                return c.done("/config#report", "saved")
         except ConfigError as e:
             return oops(viewer, "没有保存", str(e), back, "config")
-        if action == "report_test":
-            run = c.report.push("test", viewer.open_id, only=[viewer.open_id])
-            c.db.audit(viewer.open_id, "report", f"测试发送：{run['status']}")
-            if run["status"] != "success":
-                return oops(viewer, "测试周报没有发出去", run["error"] or "发送失败。请确认应用已开启机器人能力，并开通 im:message:send_as_bot 权限。", back, "config")
-            return c.done("/config#report", "report_test")
-        if action == "report_push":
-            threading.Thread(target=c.report.push, args=("manual", viewer.open_id), name="weekly-report", daemon=True).start()
-            c.db.audit(viewer.open_id, "report", "手动全量推送")
-            return c.done("/config#report", "report_pushed")
         return oops(viewer, "不认识的操作", "这个操作不存在。", back, "config")
+
+    # ---------- 报表发送 ----------
+    @app.get("/reports")
+    def reports_page(request: Request):
+        viewer, bad = guard(request, "reports")
+        if bad:
+            return bad
+        kinds = [
+            {"key": k, "name": name, "cfg": c.config.get(f"report_{k}"), "period": c.report.period(k)}
+            for k, name in REPORT_KINDS.items()
+        ]  # fmt: skip
+        return c.page(
+            "reports.html", viewer, "reports", request, kinds=kinds, scope=c.config.get("report")["scope"], runs=c.report.runs(), weekdays=WEEKDAYS,
+            leaders=len(c.directory.leaders()), allowance=c.config.monthly_allowance,
+        )  # fmt: skip
+
+    @app.post("/reports")
+    def reports_post(
+        request: Request, action: str = Form(...), kind: str = Form(""), enabled: str = Form(""), hour: str = Form(""),
+        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""),
+    ):  # fmt: skip
+        viewer, bad = c.poster(request)
+        if bad:
+            return bad
+        back = ("回到报表发送", "/reports")
+        if action == "scope":
+            try:
+                saved = c.config.save("report", {"scope": scope}, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, "没有保存", str(e), back, "reports")
+            c.db.audit(viewer.open_id, "config", f"报表发送范围：{'通讯录里所有人' if saved['scope'] == 'all' else '这一期有用量的人'}")
+            return c.done("/reports#scope", "saved")
+        if kind not in REPORT_KINDS:
+            return oops(viewer, "不认识的报表", "只有日报、周报、月报三种。", back, "reports")
+        name = REPORT_KINDS[kind]
+        if action == "save":
+            patch = {"enabled": enabled == "1", "hour": hour}
+            if kind == "weekly":
+                patch["weekday"] = weekday
+            if kind == "monthly":
+                patch["day"] = day
+            try:
+                saved = c.config.save(f"report_{kind}", patch, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, f"{name}设置没有保存", str(e), back, "reports")
+            when = {"daily": "每天", "weekly": f"每{WEEKDAYS.get(saved.get('weekday', 1), '')}", "monthly": f"每月 {saved.get('day', 1)} 日"}[kind]
+            c.db.audit(viewer.open_id, "report", f"{name}：{'开启' if saved['enabled'] else '关闭'}，{when} {saved['hour']} 点")
+            return c.done(f"/reports#{kind}", "saved")
+        if action == "test":
+            run = c.report.push(kind, "test", viewer.open_id, only=[viewer.open_id])
+            c.db.audit(viewer.open_id, "report", f"{name}测试发送给自己：{run['status']}")
+            if run["status"] != "success":
+                return oops(viewer, f"测试{name}没有发出去", run["error"] or "发送失败。请确认应用已开启机器人能力，并开通 im:message:send_as_bot 权限。", back, "reports")
+            return c.done(f"/reports#{kind}", "report_test")
+        if action == "push":
+            threading.Thread(target=c.report.push, args=(kind, "manual", viewer.open_id), name="usage-report", daemon=True).start()
+            c.db.audit(viewer.open_id, "report", f"{name}立即全量发送")
+            return c.done(f"/reports#{kind}", "report_pushed")
+        return oops(viewer, "不认识的操作", "这个操作不存在。", back, "reports")
 
     # ---------- 接入管理 ----------
     def connect_view(request: Request, viewer, secret: str = "", status: int = 200):

@@ -14,14 +14,14 @@ from datetime import datetime, timedelta
 from .db import Database
 from .feishu import CST
 from .prefs import Config
-from .report import WeeklyReport
+from .report import UsageReports
 from .sync import SyncEngine, SyncError
 
 log = logging.getLogger("aius")
 
 
 class Scheduler:
-    def __init__(self, db: Database, config: Config, engine: SyncEngine, report: WeeklyReport, interval: int = 60):
+    def __init__(self, db: Database, config: Config, engine: SyncEngine, report: UsageReports, interval: int = 60):
         self.db = db
         self.config = config
         self.engine = engine
