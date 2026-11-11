@@ -161,7 +161,8 @@ def register(app: FastAPI, c: Ctx) -> None:
         return c.page(
             "sync.html", viewer, "sync", request, creds=creds, callback_url=c.s.callback_url,
             check=loads(c.db.meta("feishu_check"), None), running=running, running_text=progress_text(running) if running else "",
-            last=runs[0] if runs else None, schedule=c.config.get("sync"), yesterday=yesterday, today=today().isoformat(),
+            last=runs[0] if runs else None, schedule=c.config.get("sync"), live=c.engine.live_state(), live_running=c.engine.live_running(),
+            yesterday=yesterday, today=today().isoformat(),
             directory={"at": c.directory.synced_at(), "users": c.directory.total_headcount(), "depts": len(c.directory.depts()), "error": c.directory.last_error,
                        "hours": c.s.directory_sync_hours},
             latest=c.analytics.latest_date(), earliest=c.analytics.earliest_date(), dev=c.s.dev_fake_login,
@@ -218,7 +219,7 @@ def register(app: FastAPI, c: Ctx) -> None:
     @app.post("/sync")
     def sync_post(
         request: Request, action: str = Form(...), start: str = Form(""), end: str = Form(""), id: int = Form(0),
-        enabled: str = Form(""), hour: str = Form(""), range_days: str = Form(""),
+        enabled: str = Form(""), hour: str = Form(""), range_days: str = Form(""), live_minutes: str = Form(""),
         app_id: str = Form(""), app_secret: str = Form(""), aily_app_id: str = Form(""), aily_app_secret: str = Form(""), aily_clear: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
@@ -247,11 +248,15 @@ def register(app: FastAPI, c: Ctx) -> None:
             c.db.audit(viewer.open_id, "check", "已连接" if result["ok"] else f"失败：{result['error']}")
             return c.done("/sync", "connected") if result["ok"] else RedirectResponse("/sync#feishu", status_code=303)
         if action == "schedule":
+            patch = {"enabled": enabled == "1", "hour": hour, "range_days": range_days}
+            if live_minutes != "":
+                patch["live_minutes"] = live_minutes
             try:
-                saved = c.config.save("sync", {"enabled": enabled == "1", "hour": hour, "range_days": range_days}, viewer.open_id)
+                saved = c.config.save("sync", patch, viewer.open_id)
             except ConfigError as e:
                 return oops(viewer, "定时同步没有保存", str(e), back, "sync")
-            c.db.audit(viewer.open_id, "config", f"定时同步：{'开启' if saved['enabled'] else '关闭'}，每天 {saved['hour']} 点，同步前 {saved['range_days']} 天")
+            live = f"当天数据每 {saved['live_minutes']} 分钟更新" if saved["live_minutes"] else "当天数据不自动更新"
+            c.db.audit(viewer.open_id, "config", f"定时同步：{'开启' if saved['enabled'] else '关闭'}，每天 {saved['hour']} 点，同步前 {saved['range_days']} 天，{live}")
             return c.done("/sync", "saved")
         if action == "directory":
             if c.s.scheduler:

@@ -120,11 +120,21 @@
 
 <section class="panel" id="schedule">
   <div class="section-head">
-    <div><h2>每日定时同步</h2><p>每天到点自动同步前几天的数据{% if schedule.last_auto_date %}；上次自动同步是 {{ schedule.last_auto_date }}{% endif %}</p></div>
+    <div><h2>定时同步</h2><p>每天到点自动同步前几天的数据{% if schedule.last_auto_date %}（上次是 {{ schedule.last_auto_date }}）{% endif %}；当天的用量日志每隔几分钟增量更新</p></div>
   </div>
+  {% if schedule.enabled and schedule.live_minutes %}
+  {% if live.at %}
+  {{ row("当天数据", "每 " ~ schedule.live_minutes ~ " 分钟更新 · 上次 " ~ live.at|clock ~ "，新拉到 " ~ live.rows|num ~ " 条，用时 " ~ live.seconds|duration
+         ~ (" · 正在更新…" if live_running else ""),
+         ("更新失败" if live.error else ("数据截至 " ~ live.until|clock)), "failed" if live.error else "ok") }}
+  {% if live.error %}<p class="error" role="alert">{{ live.error }}</p>{% endif %}
+  {% else %}
+  {{ row("当天数据", "每 " ~ schedule.live_minutes ~ " 分钟更新；第一次会从今天 0 点拉起，要几分钟", "正在更新…" if live_running else "等待第一次更新", "running" if live_running else "queued") }}
+  {% endif %}
+  {% endif %}
   <form method="post" action="/sync">
     <input type="hidden" name="action" value="schedule" />
-    <div class="fields three">
+    <div class="fields">
       <div>
         <label for="s-enabled">定时同步</label>
         <select id="s-enabled" name="enabled">
@@ -145,6 +155,13 @@
           {% for d in (1, 2, 3, 7, 14, 31) %}<option value="{{ d }}"{{ " selected" if schedule.range_days == d }}>前 {{ d }} 天</option>{% endfor %}
         </select>
         <p class="help">到昨天为止。选多于 1 天可以把前几天晚到的数据补齐。</p>
+      </div>
+      <div>
+        <label for="s-live">当天数据</label>
+        <select id="s-live" name="live_minutes">
+          {% for m in (0, 5, 10, 15, 30, 60) %}<option value="{{ m }}"{{ " selected" if schedule.live_minutes == m }}>{{ "不自动更新" if not m else "每 " ~ m ~ " 分钟更新" }}</option>{% endfor %}
+        </select>
+        <p class="help">只拉上次之后新增的用量日志（往回多拉 10 分钟），飞书那边大约晚 1–2 分钟。要开着定时同步才会更新。</p>
       </div>
     </div>
     <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>

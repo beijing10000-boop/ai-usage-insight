@@ -72,6 +72,19 @@ def test_usage_log_request_and_paging():
     assert body == {"date_start": 1778774400, "date_end": 1778860799, "subject_type": 1, "subjects": [{"entity_type": 1, "entity_ids": ["0"]}], "locale": "zh-CN"}
 
 
+def test_usage_log_for_part_of_a_day():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
+
+    fs, _ = client(handler)
+    fs.usage_page("log", "member", "2026-05-15", window=(1778810000, 1778810600))  # 当天增量同步：只查这一段
+    body = json.loads(seen[0].content)
+    assert (body["date_start"], body["date_end"]) == (1778810000, 1778810600)
+
+
 def test_usage_detail_request():
     seen = []
 

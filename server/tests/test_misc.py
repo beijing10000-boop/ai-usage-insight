@@ -54,9 +54,34 @@ def test_daily_sync_waits_while_a_manual_run_is_active(empty):
     assert config.get("sync")["last_auto_date"] == today().isoformat() and engine.active()["id"] != manual
 
 
+def test_live_sync_runs_every_few_minutes_while_the_schedule_is_on(empty):
+    scheduler, config, engine = empty.app.state.scheduler, empty.ctx.config, empty.ctx.engine
+    now = datetime.now(CST).replace(hour=12, minute=0, second=0, microsecond=0)
+    scheduler.tick(now)
+    assert scheduler.live_thread is None  # 定时同步没开
+    config.save("sync", {"enabled": True, "hour": 23, "range_days": 1}, "ou_admin")  # 默认每 10 分钟
+    scheduler.tick(now)
+    first = scheduler.live_thread
+    first.join(5)
+    assert engine.live_state()["at"] == int(now.timestamp()) and engine.live_until() == int(now.timestamp())
+    scheduler.tick(now + timedelta(minutes=5))
+    assert scheduler.live_thread is first  # 还不到 10 分钟
+    scheduler.tick(now + timedelta(minutes=9, seconds=40))  # 调度每分钟看一次：差几十秒也算到了
+    scheduler.live_thread.join(5)
+    assert scheduler.live_thread is not first and engine.live_until() == int((now + timedelta(minutes=9, seconds=40)).timestamp())
+    config.save("sync", {"live_minutes": 0}, "ou_admin")
+    last = scheduler.live_thread
+    scheduler.tick(now + timedelta(hours=1))
+    assert scheduler.live_thread is last  # 关掉了
+
+
 # ---------- 配置校验 ----------
 def test_config_validation():
     assert clean("sync", {"enabled": 1, "hour": "5", "range_days": "2"}) == {"enabled": True, "hour": 5, "range_days": 2}
+    assert clean("sync", {"live_minutes": "0"}) == {"live_minutes": 0} and clean("sync", {"live_minutes": 15}) == {"live_minutes": 15}
+    for bad in ("3", "61", "x", "-5"):
+        with pytest.raises(ConfigError):
+            clean("sync", {"live_minutes": bad})
     assert clean("pricing", {"point_price": "0.05"}) == {"point_price": 0.05}
     assert clean("report", {"since": ""}) == {"since": ""}
     for key, patch in (("sync", {"hour": 24}), ("sync", {"range_days": 0}), ("pricing", {"point_price": 0}), ("pricing", {"point_price": "x"}),

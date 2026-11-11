@@ -344,13 +344,16 @@ class FeishuClient:
 
     # ---------- AI 用量 ----------
     def usage_page(
-        self, kind: str, subject: str, day: str, page_token: str = "", app_types: tuple[int, ...] = APP_ENTITY_TYPES
-    ) -> tuple[list[dict], str]:
+        self, kind: str, subject: str, day: str, page_token: str = "", app_types: tuple[int, ...] = APP_ENTITY_TYPES,
+        window: tuple[int, int] | None = None,
+    ) -> tuple[list[dict], str]:  # fmt: skip
         """取一页用量数据，返回 (这一页的记录, 下一页的 page_token；没有下一页是空串)。
 
         kind: log（用量日志，准实时）| detail（统计详情，T+1）；subject: member | app；day: YYYY-MM-DD。
+        window: 只查这一天里的一段（起止秒级时间戳，当天增量同步用）；不给就是整天。
+        用量日志接口按秒过滤，查最近十几分钟也行（实测 2026-11：最新一条比当前时间晚一分多钟）。
         """
-        start, end = day_range(day)
+        start, end = window or day_range(day)
         subject_type, subjects = subjects_for(subject, app_types)
         # entity_ids 传 0（根部门）时，接口要求 department_id_type=department_id
         params = {"user_id_type": "open_id", "department_id_type": "department_id", "page_size": 100}
@@ -562,13 +565,19 @@ class FakeFeishu:
         return dict(self.aily_apps)
 
     # ---- AI 用量 ----
-    def usage_page(self, kind: str, subject: str, day: str, page_token: str = "", app_types: tuple[int, ...] = APP_ENTITY_TYPES) -> tuple[list[dict], str]:
-        self.calls.append(("usage_page", kind, subject, day, page_token, tuple(app_types)))
+    def usage_page(
+        self, kind: str, subject: str, day: str, page_token: str = "", app_types: tuple[int, ...] = APP_ENTITY_TYPES,
+        window: tuple[int, int] | None = None,
+    ) -> tuple[list[dict], str]:  # fmt: skip
+        self.calls.append(("usage_page", kind, subject, day, page_token, tuple(app_types)) + ((window,) if window else ()))
         if (kind, subject) in self.fail:
             raise self.fail[(kind, subject)]
         items = self.usage.get((kind, subject, day))
         if items is None:
             items = self._demo_items(kind, subject, day) if self.demo else []
+        if window:
+            stamps = [(it, int(it.get("time") or 0)) for it in items]
+            items = [it for it, t in stamps if window[0] <= (t // 1000 if t > 10**11 else t) <= window[1]]
         start = int(page_token or 0)
         page = items[start : start + self.page_size]
         more = start + self.page_size < len(items)

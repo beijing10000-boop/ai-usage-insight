@@ -8,9 +8,10 @@ from datetime import timedelta
 import pytest
 
 from aius_server.analytics import Filter
-from aius_server.feishu import LEGACY_APP_ENTITY_TYPES, FeishuError
+from aius_server.db import dumps, loads
+from aius_server.feishu import LEGACY_APP_ENTITY_TYPES, FeishuError, day_range
 from aius_server.labels import APP_ENTITY_TYPES
-from aius_server.sync import SyncError, today
+from aius_server.sync import LIVE_CURSOR, LIVE_OVERLAP, SyncError, segments, today
 from conftest import D0, D1, D2, MEMBER_D1, log, stamped
 
 
@@ -93,10 +94,10 @@ def test_progress_is_visible_while_a_dataset_is_being_fetched(empty):
     seen = []
     original = empty.feishu.usage_page
 
-    def page(kind, subject, day, token="", app_types=APP_ENTITY_TYPES):
+    def page(kind, subject, day, token="", app_types=APP_ENTITY_TYPES, window=None):
         if (kind, subject, token) == ("log", "member", "4"):  # 第三页开始前看一眼进度
             seen.append(engine.run(engine.active()["id"]))
-        return original(kind, subject, day, token, app_types)
+        return original(kind, subject, day, token, app_types, window=window)
 
     empty.feishu.usage_page = page
     run = empty.sync(D1, D1)
@@ -178,10 +179,10 @@ def test_stop_a_running_run_keeps_what_was_written(empty):
     engine = empty.ctx.engine
     original = empty.feishu.usage_page
 
-    def page(kind, subject, day, token="", app_types=APP_ENTITY_TYPES):
+    def page(kind, subject, day, token="", app_types=APP_ENTITY_TYPES, window=None):
         if (kind, subject) == ("log", "app"):  # 拉到第二个数据集时有人点了停止
             engine.stop(engine.active()["id"])
-        return original(kind, subject, day, token, app_types)
+        return original(kind, subject, day, token, app_types, window=window)
 
     empty.feishu.usage_page = page
     run = empty.sync(D1, D1)
@@ -228,10 +229,10 @@ def test_watchdog_requeues_stale_runs_then_gives_up(empty):
 def test_app_dimension_falls_back_to_the_early_entity_types(empty):
     original = empty.feishu.usage_page
 
-    def page(kind, subject, day, token="", app_types=APP_ENTITY_TYPES):
+    def page(kind, subject, day, token="", app_types=APP_ENTITY_TYPES, window=None):
         if subject == "app" and 13 in app_types:
             raise FeishuError("查询 AI 用量日志失败：code=1000001 invalid entity_type")
-        return original(kind, subject, day, token, app_types)
+        return original(kind, subject, day, token, app_types, window=window)
 
     empty.feishu.usage_page = page
     run = empty.sync(D1, D1)
@@ -292,20 +293,20 @@ def test_fallback_does_not_happen_for_unrelated_errors_and_never_drops_other_app
 
     original = empty.feishu.usage_page
 
-    def denied(kind, subject, day, token="", app_types=APP_ENTITY_TYPES):
+    def denied(kind, subject, day, token="", app_types=APP_ENTITY_TYPES, window=None):
         if (kind, subject) == ("log", "app"):
             raise FeishuError("查询 AI 用量日志失败：code=99991663 token expired")
-        return original(kind, subject, day, token, app_types)
+        return original(kind, subject, day, token, app_types, window=window)
 
     empty.feishu.usage_page = denied
     run = empty.sync(D1, D1)  # 不是参数问题：不回退，这个数据集算失败，原有数据不动
     assert run["status"] == "partial" and count(empty, "usage_logs", "subject='app'") == 3
     assert not [c for c in empty.feishu.calls if c[0] == "usage_page" and c[5] == LEGACY_APP_ENTITY_TYPES]
 
-    def rejects_new_types(kind, subject, day, token="", app_types=APP_ENTITY_TYPES):
+    def rejects_new_types(kind, subject, day, token="", app_types=APP_ENTITY_TYPES, window=None):
         if subject == "app" and 13 in app_types:
             raise FeishuError("查询 AI 用量日志失败：code=1000001 invalid param: entity_type")
-        return [i for i in original(kind, subject, day, token, app_types)[0] if i.get("entity_type") in app_types], ""
+        return [i for i in original(kind, subject, day, token, app_types, window=window)[0] if i.get("entity_type") in app_types], ""
 
     empty.feishu.usage_page = rejects_new_types
     run = empty.sync(D1, D1)  # 接口不认新类型：退回早期四类，但以前同步到的飞书项目 / CodeM 数据要留着
@@ -349,3 +350,108 @@ def test_manual_app_names_are_not_overwritten_by_sync(env):
     env.sync(D1, D1)
     env.ctx.engine.save_app_names({"cli_a": "自动解析的名字"}, "api")
     assert env.ctx.analytics.app_names()["cli_a"] == "我起的名字"
+
+
+# ---------- 当天增量同步 ----------
+T0 = day_range(D0)[0]  # 今天 0 点
+
+
+def at(hours: float) -> int:
+    return int(T0 + hours * 3600)
+
+
+def today_logs(*hours: float) -> list[dict]:
+    return stamped([log("ou_bob", "d-rd", "知识问答>主对话>网页版问答", 1, hour=h) for h in hours], D0)
+
+
+def windows(env) -> list[tuple]:
+    return [(c[2], c[3], c[6]) for c in env.feishu.calls if c[0] == "usage_page" and len(c) > 6]
+
+
+def test_segments_split_at_beijing_midnight():
+    assert segments(at(10), at(11)) == [(D0, at(10), at(11))]
+    assert segments(T0 - 600, T0 + 300) == [(D1, T0 - 600, T0 - 1), (D0, T0, T0 + 300)]
+    assert segments(at(11), at(10)) == []
+
+
+def test_live_sync_pulls_only_what_is_new_since_last_time(empty):
+    engine = empty.ctx.engine
+    empty.feishu.usage[("log", "member", D0)] = today_logs(0, 9, 11, 13)
+    r = engine.live(now=at(12))
+    assert (r["rows"], r["error"], r["until"]) == (3, "", at(12))  # 第一次从 0 点拉起；13 点那条还没发生
+    assert windows(empty) == [("member", D0, (T0, at(12))), ("app", D0, (T0, at(12)))]
+    assert count(empty, "usage_logs", f"usage_date='{D0}'") == 3 and agg_matches_logs(empty)
+
+    # 两点再拉：只拉 12 点往前 10 分钟到现在；11:57 那条晚到了，也在这一段里
+    empty.feishu.calls.clear()
+    empty.feishu.usage[("log", "member", D0)] = today_logs(0, 9, 11, 11.95, 13)
+    r = engine.live(now=at(14))
+    assert r["rows"] == 2 and windows(empty)[0] == ("member", D0, (at(12) - LIVE_OVERLAP, at(14)))
+    assert count(empty, "usage_logs", f"usage_date='{D0}'") == 5 and agg_matches_logs(empty)
+    engine.live(now=at(14))  # 同一段再拉一次：整段替换，不重复
+    assert count(empty, "usage_logs", f"usage_date='{D0}'") == 5
+    assert empty.ctx.analytics.latest_label() == f"{D0} 14:00"
+
+
+def test_live_sync_never_wipes_a_slice_with_an_empty_answer_and_keeps_errors(empty):
+    engine = empty.ctx.engine
+    empty.feishu.usage[("log", "member", D0)] = today_logs(9, 11.95)
+    engine.live(now=at(12))
+    empty.feishu.usage[("log", "member", D0)] = []  # 一条都没给：多半是接口的问题
+    r = engine.live(now=at(12.5))
+    assert r["rows"] == 0 and r["until"] == at(12.5) and count(empty, "usage_logs", f"usage_date='{D0}'") == 2
+
+    empty.feishu.fail[("log", "member")] = FeishuError("查询 AI 用量日志失败：没有权限")
+    r = engine.live(now=at(13))
+    assert "没有权限" in r["error"] and r["until"] == at(12.5)  # 失败了游标不动，下一轮从原来的位置重拉
+    assert engine.live_state()["error"] == r["error"]
+
+
+def test_live_sync_crossing_midnight_finishes_yesterday_first(empty):
+    engine = empty.ctx.engine
+    empty.feishu.usage[("log", "member", D1)] = stamped([log("ou_bob", "d-rd", "知识问答", 2, hour=23.9)], D1)
+    empty.feishu.usage[("log", "member", D0)] = today_logs(0.05)
+    empty.db.set_meta(LIVE_CURSOR, dumps({"until": T0 - 300, "gen": 0}))  # 上一次拉到昨天 23:55
+    r = engine.live(now=T0 + 300)
+    assert r["rows"] == 2 and windows(empty)[:2] == [("member", D1, (T0 - 600, T0 - 1)), ("app", D1, (T0 - 600, T0 - 1))]
+    assert count(empty, "usage_logs", f"usage_date='{D1}'") == 1 and count(empty, "usage_logs", f"usage_date='{D0}'") == 1
+
+
+def test_a_full_resync_of_today_rewinds_the_live_cursor(empty):
+    engine = empty.ctx.engine
+    items = today_logs(1, 2, 3)
+    empty.feishu.usage[("log", "member", D0)] = items
+    engine.live(now=at(23.9))
+    assert engine.live_until() == at(23.9)
+    empty.sync(D1, D1)  # 过完了的日子：游标不动
+    assert engine.live_until() == at(23.9)
+    empty.sync(D0, D0)  # 今天整天替换：它开始拉之后的用量被删掉了，游标退回到那一刻
+    cursor = loads(empty.db.meta(LIVE_CURSOR), {})
+    assert cursor["until"] <= int(time.time()) and cursor["gen"] == 2  # 人员、应用两份日志各替换了一次
+    assert count(empty, "usage_logs", f"usage_date='{D0}'") == len(items) and agg_matches_logs(empty)
+
+
+def test_live_sync_does_not_move_the_cursor_past_a_full_resync_that_happened_meanwhile(empty):
+    engine = empty.ctx.engine
+    empty.feishu.usage[("log", "member", D0)] = today_logs(1, 9, 10.5)
+    engine.live(now=at(10))
+    original = empty.feishu.usage_page
+    fired = []
+
+    def page(kind, subject, day, token="", app_types=APP_ENTITY_TYPES, window=None):
+        if window and not fired:
+            fired.append(True)
+            empty.sync(D0, D0)  # 增量同步拉到一半，有人手动整天同步了今天
+        return original(kind, subject, day, token, app_types, window=window)
+
+    empty.feishu.usage_page = page
+    r = engine.live(now=at(23.9))
+    assert fired and r["until"] <= at(10) and r["until"] != at(23.9)  # 没往前推：下一轮从整天同步开始拉的地方重拉
+    assert count(empty, "usage_logs", f"usage_date='{D0}'") == 3 and agg_matches_logs(empty)
+
+
+def test_only_one_live_sync_at_a_time(empty):
+    engine = empty.ctx.engine
+    with engine._live_lock:
+        assert engine.live_running() and engine.live(now=at(12))["skipped"]
+    assert not engine.live_running() and not windows(empty)

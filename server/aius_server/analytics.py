@@ -11,15 +11,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import cached_property
 
 from . import labels
 from .db import Database, loads, marks
 from .directory import Directory
-from .feishu import ROOT
+from .feishu import CST, ROOT
 from .prefs import Config
-from .sync import today
+from .sync import LIVE_CURSOR, today
 
 DIRECT = "__direct__"  # 部门下钻时「直属成员」这一行
 MIN_GROUP = 3  # 普通用户看「所在部门」的汇总：除了自己，至少要有这么多同事用过 AI 才显示点数
@@ -204,6 +204,20 @@ class Analytics:
 
     def earliest_date(self) -> str | None:
         return self.db.val("SELECT MIN(usage_date) FROM usage_agg")
+
+    def live_clock(self, day: str | None) -> str:
+        """当天增量同步拉到了 day 这一天的几点（"15:20"）；没拉到这一天就是空串。"""
+        until = int(loads(self.db.meta(LIVE_CURSOR), {}).get("until", 0))
+        if not day or not until:
+            return ""
+        at = datetime.fromtimestamp(until, CST)
+        return at.strftime("%H:%M") if at.date().isoformat() == day else ""
+
+    def latest_label(self) -> str | None:
+        """侧栏的「数据截至」：最近一个有数据的日子；当天增量同步拉到了这一天，再带上几点。"""
+        latest = self.latest_date()
+        clock = self.live_clock(latest)
+        return f"{latest} {clock}" if clock else latest
 
     def default_range(self, days: int = 30) -> tuple[str, str]:
         """默认看到最近一个有数据的日子为止的 days 天；还没同步过就到昨天。"""
@@ -734,7 +748,7 @@ class Analytics:
                          "state_label": "已用完" if rate >= 100 else ("即将用完" if rate >= 90 else ("偏高" if rate >= 75 else "正常"))})  # fmt: skip
         return {
             "month": month,
-            "label": month_name(month) + ("" if complete else f"（截至 {int(end[5:7])}/{int(end[8:10])}）"),
+            "label": month_name(month) + ("" if complete else f"（截至 {int(end[5:7])}/{int(end[8:10])}{(' ' + self.live_clock(end)).rstrip()}）"),
             "start": start,
             "end": end,
             "complete": complete,
