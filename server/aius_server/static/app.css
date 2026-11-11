@@ -454,6 +454,58 @@ progress.meter.failed::-moz-progress-bar {
   flex: 1;
   min-width: 200px;
 }
+/* 成员用量的找人框：输入框下面的实时匹配列表 */
+.member-search {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+}
+.member-search input {
+  width: 100%;
+}
+.member-results {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+}
+.member-results a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-decoration: none;
+}
+.member-results a small {
+  grid-column: 1 / -1;
+  color: var(--text-2);
+}
+.member-results-usage {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.member-results a:hover,
+.member-results [aria-selected="true"] a {
+  background: var(--accent-soft);
+}
+.member-results-empty {
+  padding: 8px 10px;
+  color: var(--text-2);
+  font-size: 13px;
+}
 .add-row input[type="number"] {
   width: 140px;
 }

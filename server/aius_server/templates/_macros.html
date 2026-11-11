@@ -191,6 +191,16 @@
 {# 同步任务的状态 #}
 {% macro run_status(run) %}<span class="status {{ run.status }}">{{ run.status_label }}</span>{% endmacro %}
 
+{# 成员用量的找人框：边输入边在下面列出匹配的人（app.js 的 data-member-search），点一下或方向键 + 回车打开他的用量页。
+   直接回车（没选列表里的人）就按输入的内容搜：只有一个人直接打开，多个人列出来 #}
+{% macro member_search(id, placeholder, value="") %}
+<div class="member-search">
+  <input id="{{ id }}" name="q" type="search" value="{{ value }}" placeholder="{{ placeholder }}" autocomplete="off" required
+    data-member-search role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="{{ id }}-results" />
+  <ul id="{{ id }}-results" class="member-results" role="listbox" aria-label="匹配的人" hidden></ul>
+</div>
+{% endmacro %}
+
 {# 输入联想：kind = dept | user | app。选中的是 ID，显示的是名称 #}
 {% macro suggest_input(id, name, kind, placeholder, value="", required=true) %}
 <input id="{{ id }}" name="{{ name }}" list="{{ id }}-list" data-suggest="{{ kind }}" autocomplete="off" placeholder="{{ placeholder }}" value="{{ value }}"{{ " required" if required }} />

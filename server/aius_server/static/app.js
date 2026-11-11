@@ -140,6 +140,102 @@
       }, 200);
     });
   }
+  // ---- 成员用量的找人框：边输入边列出匹配的人 ----
+  // 不用浏览器自带的 datalist：它的选项是异步换上去的，很多浏览器输入时不弹出来，选中后框里还会变成用户 ID
+  for (const input of $$("input[data-member-search]")) {
+    const box = document.getElementById(input.getAttribute("aria-controls"));
+    let timer = 0;
+    let latest = 0;
+    let active = -1;
+    const options = () => $$('[role="option"]', box);
+    const close = () => {
+      box.hidden = true;
+      active = -1;
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+    };
+    const highlight = (index) => {
+      const list = options();
+      if (!list.length) return;
+      active = (index + list.length) % list.length;
+      list.forEach((option, i) => option.setAttribute("aria-selected", String(i === active)));
+      input.setAttribute("aria-activedescendant", list[active].id);
+      list[active].scrollIntoView({ block: "nearest" });
+    };
+    const line = (tag, className, text) => {
+      const node = document.createElement(tag);
+      node.className = className;
+      node.textContent = text;
+      return node;
+    };
+    const render = (data, query) => {
+      const items = data.items || [];
+      if (!items.length) {
+        box.replaceChildren(line("li", "member-results-empty", `没有找到「${query}」：换成姓名的一部分、英文名或邮箱试试`));
+      } else {
+        box.replaceChildren(
+          ...items.map((item, i) => {
+            const option = document.createElement("li");
+            option.id = `${box.id}-${i}`;
+            option.setAttribute("role", "option");
+            option.setAttribute("aria-selected", "false");
+            const link = document.createElement("a");
+            link.href = item.href;
+            link.tabIndex = -1;
+            link.append(
+              line("strong", "", item.name),
+              line("span", "member-results-usage", item.usage),
+              line("small", "", [item.en_name, item.dept_path].filter(Boolean).join(" · ")),
+            );
+            option.append(link);
+            return option;
+          }),
+          ...(data.more ? [line("li", "member-results-empty", "只列出前 10 个，多输入几个字可以缩小范围；直接回车可以看全部")] : []),
+        );
+      }
+      active = -1;
+      box.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+      input.removeAttribute("aria-activedescendant");
+    };
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      const query = input.value.trim();
+      if (!query) return close();
+      timer = setTimeout(async () => {
+        const mine = ++latest; // 打字快时，只显示最后一次输入的结果
+        try {
+          const response = await fetch(`/members/search?q=${encodeURIComponent(query)}`);
+          if (!response.ok || mine !== latest) return;
+          render(await response.json(), query);
+        } catch {} // 实时匹配失败时，回车照样能搜
+      }, 150);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (!options().length) return;
+        event.preventDefault();
+        box.hidden = false;
+        input.setAttribute("aria-expanded", "true");
+        highlight(active + (event.key === "ArrowDown" ? 1 : -1));
+      } else if (event.key === "Enter" && !box.hidden && active >= 0) {
+        event.preventDefault();
+        location.href = options()[active].querySelector("a").href;
+      } else if (event.key === "Escape" && !box.hidden) {
+        event.preventDefault();
+        close();
+      }
+    });
+    box.addEventListener("mousedown", (event) => event.preventDefault()); // 点列表时输入框不失焦，点击照常打开链接
+    input.addEventListener("blur", close);
+    input.addEventListener("focus", () => {
+      if (input.value.trim() && box.children.length) {
+        box.hidden = false;
+        input.setAttribute("aria-expanded", "true");
+      }
+    });
+  }
+
   // 额度表单：对象类型换了，联想的范围跟着换
   for (const select of $$("select[data-suggest-kind]")) {
     const input = document.getElementById(select.dataset.suggestKind);

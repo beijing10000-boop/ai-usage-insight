@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,12 @@ log = logging.getLogger("aius")
 
 MAX_DEPTH = 64  # 防止脏数据里的环
 PATH_SEP = " > "
+_LOOSE = re.compile(r"[\s._\-·]+")
+
+
+def _loose(text: str) -> str:
+    """找人时比较用的写法：去掉空格、点、横线、下划线和间隔号。"""
+    return _LOOSE.sub("", text)
 
 
 class Directory:
@@ -143,11 +150,23 @@ class Directory:
         return u.dept_ids[0] if u and u.dept_ids else ""
 
     def search_users(self, query: str, limit: int = 10) -> list[DirUser]:
+        """按姓名、英文名、邮箱的任意一段找人，不分大小写；比较姓名时不管空格和点（「anna smith」「annasmith」都能找到 Anna.Smith）。
+        完全同名的排最前，其次是姓名以输入开头的。"""
         q = query.strip().casefold()
         if not q:
             return []
-        hits = [u for u in self._users.values() if q in u.name.casefold() or q in u.en_name.casefold() or q in u.email or q == u.open_id.casefold()]
-        return sorted(hits, key=lambda u: (u.name.casefold() != q, u.name))[:limit]
+        loose = _loose(q)
+
+        def hit(u: DirUser) -> bool:
+            name, en = u.name.casefold(), u.en_name.casefold()
+            return (q in name or q in en or q in u.email.casefold() or q == u.open_id.casefold()
+                    or bool(loose) and (loose in _loose(name) or loose in _loose(en)))  # fmt: skip
+
+        def rank(u: DirUser) -> tuple:
+            name = u.name.casefold()
+            return (name != q, not (name.startswith(q) or _loose(name).startswith(loose)), u.name)
+
+        return sorted((u for u in self._users.values() if hit(u)), key=rank)[:limit]
 
     # ---------- 快照里没有的名称 ----------
     def missing(self, kind: str, ids: list[str]) -> list[str]:

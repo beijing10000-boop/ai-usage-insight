@@ -205,6 +205,17 @@ class Analytics:
     def earliest_date(self) -> str | None:
         return self.db.val("SELECT MIN(usage_date) FROM usage_agg")
 
+    def member_amounts(self, ids: list[str], start: str, end: str) -> dict[str, float]:
+        """几个人在一段日期里的人员用量（点）；没有用量的人不在结果里。"""
+        if not ids:
+            return {}
+        rows = self.db.q(
+            f"SELECT entity_id, SUM(amount) FROM usage_agg WHERE subject='member' AND usage_date BETWEEN ? AND ? AND entity_id IN ({marks(len(ids))}) "
+            "GROUP BY entity_id",
+            [start, end, *ids],
+        )
+        return {r[0]: r[1] for r in rows}
+
     def live_clock(self, day: str | None) -> str:
         """当天增量同步拉到了 day 这一天的几点（"15:20"）；没拉到这一天就是空串。"""
         until = int(loads(self.db.meta(LIVE_CURSOR), {}).get("until", 0))

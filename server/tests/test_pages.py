@@ -132,6 +132,25 @@ def test_sync_page_shows_the_live_sync(env):
     assert f"数据截至 {D0} {clock}" in c.get("/dashboard").text  # 侧栏带上几点
 
 
+def test_member_search_matches_while_typing(env):
+    from aius_server.feishu import DirUser
+
+    env.ctx.directory._users["ou_anna"] = DirUser("ou_anna", "Anna.Smith", "Anna.Smith", "anna@example.com", ("d-rd",))
+    admin = env.browser("admin@example.com")
+    page = admin.get("/members").text
+    assert "data-member-search" in page and 'role="combobox"' in page and 'aria-controls="member-q-results"' in page
+    items = admin.get("/members/search", params={"q": "bo"}).json()["items"]  # 英文名的一部分
+    bob = next(i for i in items if i["id"] == "ou_bob")
+    assert bob["name"] == "鲍勃" and bob["href"] == "/self-usage?member=ou_bob" and bob["dept_path"].endswith("研发部") and "点 · ¥" in bob["usage"]
+    for q in ("anna", "ANNA S", "anna smith", "annasmith", "smith", "Anna.S"):  # 不用输全名，空格、点都不要紧
+        assert [i["id"] for i in admin.get("/members/search", params={"q": q}).json()["items"]] == ["ou_anna"], q
+    assert admin.get("/members/search", params={"q": "  "}).json() == {"items": [], "more": False}
+    many = admin.get("/members/search", params={"q": "example.com"}).json()
+    assert len(many["items"]) == 8 and not many["more"]
+    assert env.browser("bob@example.com").get("/members/search", params={"q": "bo"}).status_code == 403
+    assert env.browser().get("/members/search", params={"q": "bo"}).status_code == 401
+
+
 def test_money_is_shown_next_to_points(env):
     admin = env.browser("admin@example.com")
     page = admin.get("/dashboard").text  # 两天合计 214 点（人员 144 + 应用 70），0.05 元/点
