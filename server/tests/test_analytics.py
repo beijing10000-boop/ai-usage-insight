@@ -107,11 +107,33 @@ def test_logs_can_be_searched_by_scenario_person_or_app(env):
 
 
 def test_details_list(env):
-    rows, total = env.ctx.analytics.details(D1, D1)
+    rows, total, sums = env.ctx.analytics.details(D1, D1)
     assert total == 3
     bob = next(r for r in rows if r["entity_id"] == "ou_bob")
     assert bob["quotas"] == [10, 0, 0, 20, 0, 0] and bob["total"] == 30 and bob["name"] == "鲍勃"
-    assert env.ctx.analytics.details(D1, D1, member="ou_carol")[1] == 1
+    # 合计：鲍勃 10 + 20、卡萝 100、应用 cli_a 30
+    assert sums == {"quotas": [40, 0, 100, 20, 0, 0], "total": 160}
+    _rows, n, carol = env.ctx.analytics.details(D1, D1, member="ou_carol")
+    assert n == 1 and carol["total"] == 100
+    # 合计按整个筛选范围算，不只是这一页
+    page, n, all_sums = env.ctx.analytics.details(D1, D1, limit=1)
+    assert len(page) == 1 and n == 3 and all_sums["total"] == 160
+    assert env.ctx.analytics.details("2020-01-01", "2020-01-02")[1:] == (0, {"quotas": [0, 0, 0, 0, 0, 0], "total": 0})
+
+
+def test_details_page_and_export_show_the_total(env):
+    c = env.browser("admin@example.com")
+    r = c.get(f"/data?tab=details&start={D1}&end={D1}&member=ou_carol")
+    assert "共 1 条记录，合计 100 点" in r.text and 'class="total-row"' in r.text
+    import io
+    import zipfile
+
+    x = c.get(f"/data/export.xlsx?tab=details&start={D1}&end={D1}")
+    with zipfile.ZipFile(io.BytesIO(x.content)) as z:
+        text = "".join(z.read(n).decode() for n in z.namelist() if n.endswith(".xml"))
+    assert "合计（" in text and "<v>160.0</v>" in text
+    data = env.api("ou_admin").get(f"/openapi/v1/usage-details?start={D1}&end={D1}").json()
+    assert data["amount"] == 160 and data["quota_totals"][0] == 40
 
 
 def test_rollup_counts_a_department_once_even_if_its_parent_is_also_picked(env):

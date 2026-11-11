@@ -80,7 +80,7 @@
   <p class="empty">这个范围和筛选条件下没有用量记录。换一个时间范围，或者先确认这些日期已经同步。</p>
   {% endif %}
   {% else %}
-  <p class="small muted">共 {{ pager.total|num }} 条记录。</p>
+  <p class="small muted">共 {{ pager.total|num }} 条记录，合计 {{ amount|num }} 点。</p>
   {% if rows %}
   <div class="table-wrap">
     <table>
@@ -95,6 +95,14 @@
         </tr>
         {% endfor %}
       </tbody>
+      {# 合计是整个筛选范围的，不只是这一页 #}
+      <tfoot>
+        <tr class="total-row">
+          <th scope="row" colspan="2">合计<small>{{ rng.label }}{{ "，共 " ~ pager.total|num ~ " 条，不只是这一页" if pager.pages > 1 else "" }}</small></th>
+          {% for v in sums.quotas %}<td class="num">{{ v|num if v else "—" }}</td>{% endfor %}
+          <td class="num"><strong>{{ sums.total|num }}</strong></td>
+        </tr>
+      </tfoot>
     </table>
   </div>
   {% else %}

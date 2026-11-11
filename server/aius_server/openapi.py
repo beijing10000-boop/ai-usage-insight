@@ -152,8 +152,8 @@ class Api:
 
     def my_details(self, v: Viewer, start: str, end: str, page: int = 1, size: int = 50) -> dict:
         limit, offset = self.paging(page, size)
-        rows, total = self.an.details(start, end, member=v.open_id, limit=limit, offset=offset)
-        return {**_span(start, end), "total": total, "page": page, "size": size, "quota_types": list(labels.FEATURE_KEYS.values()), "items": [_detail(r) for r in rows]}
+        rows, total, sums = self.an.details(start, end, member=v.open_id, limit=limit, offset=offset)
+        return {**_span(start, end), "total": total, "amount": sums["total"], "quota_totals": sums["quotas"], "page": page, "size": size, "quota_types": list(labels.FEATURE_KEYS.values()), "items": [_detail(r) for r in rows]}
 
     def my_department(self, v: Viewer, start: str, end: str) -> dict:
         visible = self.c.access.can_see_dept(v, self.c.directory.user_dept(v.open_id))
@@ -276,8 +276,8 @@ class Api:
     def usage_details(self, v: Viewer, start: str, end: str, subject: str = "", page: int = 1, size: int = 50) -> dict:
         self.admin(v)
         limit, offset = self.paging(page, size)
-        rows, total = self.an.details(start, end, subject, limit=limit, offset=offset)
-        return {**_span(start, end), "total": total, "page": page, "size": size, "quota_types": list(labels.FEATURE_KEYS.values()), "items": [_detail(r) for r in rows]}
+        rows, total, sums = self.an.details(start, end, subject, limit=limit, offset=offset)
+        return {**_span(start, end), "total": total, "amount": sums["total"], "quota_totals": sums["quotas"], "page": page, "size": size, "quota_types": list(labels.FEATURE_KEYS.values()), "items": [_detail(r) for r in rows]}
 
     def quotas(self, v: Viewer) -> dict:
         self.admin(v)

@@ -618,8 +618,11 @@ class Analytics:
             )
         return out, total, r2(amount)
 
-    def details(self, start: str, end: str, subject: str = "", member: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
-        """统计详情（飞书按天给出的各额度类型用量汇总，T+1）。"""
+    def details(
+        self, start: str, end: str, subject: str = "", member: str | None = None, limit: int = 50, offset: int = 0
+    ) -> tuple[list[dict], int, dict]:  # fmt: skip
+        """统计详情（飞书按天给出的各额度类型用量汇总，T+1）。返回 (这一页, 总条数, 合计)：
+        合计是整个筛选范围（不只是这一页）各额度类型的点数 quotas 和总点数 total。"""
         where, params = "usage_date BETWEEN ? AND ?", [start, end]
         if member:
             where += " AND subject='member' AND entity_id=?"
@@ -627,7 +630,8 @@ class Analytics:
         elif subject in ("member", "app"):
             where += " AND subject=?"
             params.append(subject)
-        total = self.db.val(f"SELECT COUNT(*) FROM usage_details WHERE {where}", params, 0)
+        got = self.db.one(f"SELECT COUNT(*), {', '.join(f'COALESCE(SUM(q{i}), 0)' for i in range(1, 7))} FROM usage_details WHERE {where}", params)
+        total, sums = got[0], [r2(v) for v in tuple(got)[1:]]
         names = self.app_names()
         out = []
         for r in self.db.q(
@@ -645,7 +649,7 @@ class Analytics:
                     "total": r2(sum(quotas)),
                 }
             )
-        return out, total
+        return out, total, {"quotas": sums, "total": r2(sum(sums))}
 
     # ---------- 个人用量 ----------
     def member_profile(self, open_id: str, start: str, end: str, dept_visible: bool = False, monthly: bool = False) -> dict:

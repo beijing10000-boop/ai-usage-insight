@@ -82,6 +82,29 @@ a.stat:hover {
   font-size: 12px;
   color: var(--text-3);
 }
+/* 表格最下面的合计行（统计详情）：ui-kit 的 th 是吸顶的表头样式，这里要放回原位 */
+.total-row th,
+.total-row td {
+  position: static;
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.total-row th {
+  text-align: left;
+  font-size: 13px;
+}
+.total-row th small {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: normal;
+}
+
 /* 范围栏里的「按月」和起止日期各是一个表单，排在同一行 */
 .range-month,
 .range-dates {

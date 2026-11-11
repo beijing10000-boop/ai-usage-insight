@@ -334,8 +334,8 @@ def register(app: FastAPI, c: Ctx) -> None:
                       member_name=c.directory.user_name(f.member) if f.member else "",
                       dept_name=c.directory.dept_path(q.get("dept", "")) if f.depts is not None else "")  # fmt: skip
         if tab == "details":
-            rows, total = an.details(rng.start, rng.end, opts["subject"], f.member, PAGE_SIZE, (page - 1) * PAGE_SIZE)
-            return c.page("data.html", viewer, "data", request, rows=rows, pager=Pager(page, PAGE_SIZE, total), amount=None, **shared)
+            rows, total, sums = an.details(rng.start, rng.end, opts["subject"], f.member, PAGE_SIZE, (page - 1) * PAGE_SIZE)
+            return c.page("data.html", viewer, "data", request, rows=rows, pager=Pager(page, PAGE_SIZE, total), amount=sums["total"], sums=sums, **shared)
         rows, total, amount = an.logs(f, limit=PAGE_SIZE, offset=(page - 1) * PAGE_SIZE, **opts)
         return c.page("data.html", viewer, "data", request, rows=rows, pager=Pager(page, PAGE_SIZE, total), amount=amount, **shared)
 
@@ -358,9 +358,12 @@ def register(app: FastAPI, c: Ctx) -> None:
         rng = c.pick_range(request, 7)
         f, opts = log_filter(request, rng)
         if tab == "details":
-            rows, _total = an.details(rng.start, rng.end, opts["subject"], f.member, EXPORT_LIMIT, 0)
+            rows, total, sums = an.details(rng.start, rng.end, opts["subject"], f.member, EXPORT_LIMIT, 0)
             head = ["日期", "类型", "对象", "对象 ID", *labels.FEATURE_KEYS.values(), "合计"]
-            sheets = [("统计详情", head, [[r["date"], labels.SUBJECTS.get(r["subject"], r["subject"]), r["name"], r["entity_id"], *r["quotas"], r["total"]] for r in rows])]
+            body = [[r["date"], labels.SUBJECTS.get(r["subject"], r["subject"]), r["name"], r["entity_id"], *r["quotas"], r["total"]] for r in rows]
+            # 最后一行是整个筛选范围的合计（超过导出上限时只导出前面的行，合计仍是全部的）
+            body.append([f"合计（{rng.start} ~ {rng.end}，{total} 条）", "", "", "", *sums["quotas"], sums["total"]])
+            sheets = [("统计详情", head, body)]
         else:
             rows, _total, _amount = an.logs(f, limit=EXPORT_LIMIT, offset=0, **opts)
             sheets = [logs_sheet(rows)]

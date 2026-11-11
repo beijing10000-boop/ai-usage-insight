@@ -4,7 +4,7 @@ services:
       context: .
       args:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
-    image: ai-usage-insight:0.3.0
+    image: ai-usage-insight:0.3.1
     env_file: .env
     ports:
       - "${AIUS_BIND:-0.0.0.0}:${AIUS_PORT:-8090}:8080"
