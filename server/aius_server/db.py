@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 从 usage_logs 生成 usage_agg 的那条语句；{where} 是要汇总的范围（同步时是刚写入的那个「日期 × 主体」）
 AGG_INSERT = (
@@ -181,6 +181,19 @@ CREATE TABLE IF NOT EXISTS usage_details (
 );
 CREATE INDEX IF NOT EXISTS usage_details_date ON usage_details(usage_date, subject);
 CREATE INDEX IF NOT EXISTS usage_details_entity ON usage_details(entity_id, usage_date);
+-- 数据核对（v4）：每天每个主体，用量日志的合计和飞书统计详情逐人（应用）对一遍。同一天再核对就覆盖
+CREATE TABLE IF NOT EXISTS reconcile (
+    usage_date    TEXT NOT NULL,
+    subject       TEXT NOT NULL,               -- member | app
+    log_points    REAL NOT NULL,
+    detail_points REAL NOT NULL,
+    log_count     INTEGER NOT NULL,            -- 有用量日志的人（应用）数
+    detail_count  INTEGER NOT NULL,            -- 统计详情里的人（应用）数
+    mismatched    INTEGER NOT NULL,            -- 两边对不上的人（应用）数
+    samples       TEXT NOT NULL DEFAULT '',    -- JSON：差得最多的几个 [{id, log, detail}]
+    checked_at    INTEGER NOT NULL,
+    PRIMARY KEY (usage_date, subject)
+);
 -- 应用名称映射。source: api（开放平台应用信息）| aily（Aily 应用统计）| manual（手工维护，优先级最高）
 CREATE TABLE IF NOT EXISTS app_mapping (
     app_id     TEXT PRIMARY KEY,

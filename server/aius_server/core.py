@@ -42,6 +42,7 @@ FLASH = {
     "saved": ("success", "已保存"),
     "connected": ("success", "已连接：飞书应用凭证可用"),
     "directory": ("success", "已通知后台同步通讯录，通常一两分钟内完成，稍后刷新查看"),
+    "reconciled": ("success", "已重新核对全部已有数据，结果在「数据核对」里"),
     "quota_saved": ("success", "额度已保存"),
     "quota_deleted": ("success", "额度记录已删除"),
     "quota_toggled": ("success", "已更新状态"),
