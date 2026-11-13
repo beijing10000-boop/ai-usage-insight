@@ -33,15 +33,20 @@ def test_periods():
     r = UsageReports.__new__(UsageReports)  # 周期只和日期有关
     d = r.period("daily", date(2026, 11, 11))  # 周三发周二的
     assert (d["start"], d["end"], d["prev_start"], d["prev_end"]) == ("2026-11-10", "2026-11-10", "2026-11-03", "2026-11-03")
-    assert d["label"] == "11 月 10 日（周二）" and d["title"] == "11/10 周二" and d["prev_label"] == "上周同日"
+    assert d["label"] == "11 月 10 日（周二）" and d["title"] == "11/10 周二"
+    # 卡片上写明统计的是哪一期、涨跌和哪一期比
+    assert (d["scope"], d["vs"], d["vs_note"]) == ("昨天（11 月 10 日全天）", "比上周二", "涨跌对比上周二（11 月 3 日）")
     w = r.period("weekly", date(2026, 11, 11))
     assert (w["start"], w["end"], w["prev_start"], w["prev_end"]) == ("2026-11-02", "2026-11-08", "2026-10-26", "2026-11-01")
-    assert w["title"] == "11/02 - 11/08" and w["prev_label"] == "上一周"
+    assert w["title"] == "11/02 - 11/08"
+    assert (w["scope"], w["vs"], w["vs_note"]) == ("上周（11 月 2 日 - 11 月 8 日）", "比前一周", "涨跌对比前一周（10 月 26 日 - 11 月 1 日）")
     assert r.period("weekly", date(2026, 11, 9))["start"] == "2026-11-02"  # 周一发的也是上一周
     m = r.period("monthly", date(2026, 11, 1))
     assert (m["start"], m["end"], m["prev_start"], m["prev_end"]) == ("2026-10-01", "2026-10-31", "2026-09-01", "2026-09-30")
     assert m["label"] == "2026 年 10 月"
-    assert r.period("monthly", date(2027, 1, 5))["start"] == "2026-12-01"  # 跨年
+    assert (m["scope"], m["vs"], m["vs_note"]) == ("上个月（10 月 1 日 - 10 月 31 日）", "比 9 月", "涨跌对比 9 月")
+    jan = r.period("monthly", date(2027, 1, 5))  # 跨年
+    assert jan["start"] == "2026-12-01" and jan["vs"] == "比 11 月"
 
 
 def test_number_formats():
@@ -67,21 +72,24 @@ def test_personal_and_department_cards(env):
     # 开头不带 Hi，称呼用「您」；个人部分叫「个人用量」
     assert card["elements"][0]["content"] == f"**鲍勃**，这是您和您负责的部门在 **{d1.month} 月 {d1.day} 日（{WEEKDAYS[d1.isoweekday()]}）** 的飞书/豆包 AI 用量日报。"
     assert "Hi" not in text and "你" not in text and "**👤 个人用量**" in text and "我的用量" not in text
-    # 个人一排指标：点数、金额、使用次数、比上周同日（日报没有天数）
+    # 个人一排指标：点数、金额、使用次数、比上周同一天（日报没有天数）；对比那列写明比的是哪天
+    vs = f"比上{WEEKDAYS[d1.isoweekday()]}"
     mine = card["elements"][2]
-    assert stat_row(mine) == [("消耗点数", "30"), ("消耗金额", "¥1.50"), ("使用次数", "2"), ("比上周同日", "—")]  # 上周同日没有数据：—
-    # 部门一排指标：点数、金额、活跃人数、人均、比上周同日；下面是排名和常用场景（带编号）
+    assert stat_row(mine) == [("消耗点数", "30"), ("消耗金额", "¥1.50"), ("使用次数", "2"), (vs, "—")]  # 上周同一天没有数据：—
+    # 部门一排指标：点数、金额、活跃人数、人均、比上周同一天；下面是排名和常用场景（带编号）
     dept = next(e for e in card["elements"] if e["tag"] == "column_set" and e is not mine)
-    assert stat_row(dept) == [("部门点数", "31"), ("部门金额", "¥1.55"), ("活跃人数", "2 / 2"), ("人均点数", "15.5"), ("比上周同日", "—")]
+    assert stat_row(dept) == [("消耗点数", "31"), ("消耗金额", "¥1.55"), ("活跃人数", "2 / 2"), ("人均点数", "15.5"), (vs, "—")]  # 和个人同一个叫法
     assert "研发部 · 部门用量" in text and "① 鲍勃 · 30 点" in text and "活跃 **" not in text and "人均 " not in text
     assert "主要场景" not in text and text.count("**常用场景**\n① ") == 2  # 个人和部门一样：常用场景 + ①②③
     assert "🥇" not in text  # 排名用圈数字，不用奖牌
     # 不再有「部门详情请查看」「更多信息请查看」两行，也不写「在公司网络里用飞书登录后查看」
     assert "详情请查看" not in text and "更多信息请查看" not in text and "登录后查看" not in text
-    # 最下面只有一个「点击查看更多信息」按钮，最后一行是数据截止时间（日报是昨天全天，不是发送那一刻的数据）
+    # 最下面只有一个「点击查看更多信息」按钮，最后一行是统计时间（日报是昨天全天，不是发送那一刻的数据）和涨跌对比的是哪天
     assert [(b["text"]["content"], b["url"]) for b in card["elements"][-2]["actions"]] == [("点击查看更多信息", "http://testserver")]
     note = card["elements"][-1]
-    assert note["tag"] == "note" and note["elements"][0]["content"] == f"数据截止时间：{d1.year} 年 {d1.month} 月 {d1.day} 日 24:00（按整天统计）· 按 0.05 元/点折算"
+    assert note["tag"] == "note" and note["elements"][0]["content"] == f"统计时间：{period['scope']}，{period['vs_note']} · 按 0.05 元/点折算"
+    assert note["elements"][0]["content"].startswith(f"统计时间：昨天（{d1.month} 月 {d1.day} 日全天），涨跌对比{vs[1:]}（")
+    assert "按整天统计" not in text and "数据截止时间" not in text
     # 技术中心的负责人爱丽丝自己没用过，部门（含研发部、运维部）有：鲍勃 30 + 戴维 1 + 艾琳 5
     tech = report.department(data, "d-tech")
     assert tech["amount"] == 36 and tech["active"] == 3
@@ -92,7 +100,7 @@ def test_personal_and_department_cards(env):
     assert "部门用量" not in text_of(dave) and dave["elements"][0]["content"].startswith("**戴维**，这是您在 ") and len(dave["elements"][-2]["actions"]) == 1
     # 周报：个人那排多一列「使用天数」
     weekly = report.card(report.period("weekly"), "ou_bob", {**me, "days": 1}, [])
-    assert stat_row(weekly["elements"][2]) == [("消耗点数", "30"), ("消耗金额", "¥1.50"), ("使用次数", "2"), ("使用天数", "1"), ("比上一周", "—")]
+    assert stat_row(weekly["elements"][2]) == [("消耗点数", "30"), ("消耗金额", "¥1.50"), ("使用次数", "2"), ("使用天数", "1"), ("比前一周", "—")]
 
 
 def test_monthly_allowance_line(env):

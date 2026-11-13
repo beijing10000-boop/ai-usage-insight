@@ -2,7 +2,7 @@
 
 - 每个人（个人用量）：这一期自己用了多少点、折算多少钱、用了几次、和上一期比、常用场景，以及截止到这一期最后一天基础额度用到了哪儿。
 - 部门负责人：再加上他负责的部门（含下级）这一期的用量、活跃人数、人均、用量最多的人和常用场景（最多 MAX_DEPTS 个部门）。
-- 卡片最下面是一个「点击查看更多信息」按钮（打开平台首页），最后一行是数据截止时间（按整天统计，到哪天 24:00）。
+- 卡片最下面是一个「点击查看更多信息」按钮（打开平台首页），最后一行是统计时间：昨天 / 上周 / 上个月是哪几天，涨跌和哪一期比。
 - 用平台自己的飞书应用（机器人）发送。
 
 日报发昨天的，和上周同一天比（和前一天比会被周末带偏）；周报发上一个自然周；月报发上一个自然月。
@@ -61,6 +61,10 @@ def short(day: date) -> str:
     return f"{day.month:02d}/{day.day:02d}"
 
 
+def day_name(day: date) -> str:
+    return f"{day.month} 月 {day.day} 日"
+
+
 def scene(raw: str | None) -> str:
     """场景只留前两级：「豆包工作>任务模式>xxx」→「豆包工作>任务模式」。"""
     return ">".join((raw or UNKNOWN_SCENARIO).split(">")[:2])
@@ -109,26 +113,32 @@ class UsageReports:
         if kind == "daily":
             start = end = now - timedelta(days=1)
             prev_start = prev_end = start - timedelta(days=7)
-            label = f"{start.month} 月 {start.day} 日（{WEEKDAYS[start.isoweekday()]}）"
-            title, prev_label = f"{short(start)} {WEEKDAYS[start.isoweekday()]}", "上周同日"
+            weekday = WEEKDAYS[start.isoweekday()]
+            label, title = f"{start.month} 月 {start.day} 日（{weekday}）", f"{short(start)} {weekday}"
+            scope = f"昨天（{day_name(start)}全天）"
+            vs, vs_note = f"比上{weekday}", f"涨跌对比上{weekday}（{day_name(prev_start)}）"
         elif kind == "weekly":
             monday = now - timedelta(days=now.weekday())
             start, end = monday - timedelta(days=7), monday - timedelta(days=1)
             prev_start, prev_end = start - timedelta(days=7), start - timedelta(days=1)
-            label, title, prev_label = f"{start.month} 月 {start.day} 日 - {end.month} 月 {end.day} 日", f"{short(start)} - {short(end)}", "上一周"
+            label, title = f"{day_name(start)} - {day_name(end)}", f"{short(start)} - {short(end)}"
+            scope = f"上周（{label}）"
+            vs, vs_note = "比前一周", f"涨跌对比前一周（{day_name(prev_start)} - {day_name(prev_end)}）"
         elif kind == "monthly":
             end = now.replace(day=1) - timedelta(days=1)
             start = end.replace(day=1)
             prev_end = start - timedelta(days=1)
             prev_start = prev_end.replace(day=1)
             label = title = month_name(start.isoformat()[:7])
-            prev_label = "上个月"
+            scope = f"上个月（{day_name(start)} - {day_name(end)}）"
+            vs, vs_note = f"比 {prev_start.month} 月", f"涨跌对比 {prev_start.month} 月"
         else:
             raise ValueError(f"没有这种报表：{kind}")
         return {
             "kind": kind, "name": KINDS[kind], "start": start.isoformat(), "end": end.isoformat(),
-            "prev_start": prev_start.isoformat(), "prev_end": prev_end.isoformat(),
-            "label": label, "title": title, "prev_label": prev_label,
+            "prev_start": prev_start.isoformat(), "prev_end": prev_end.isoformat(), "label": label, "title": title,
+            # 卡片上写明：统计的是哪一期（昨天 / 上周 / 上个月）、涨跌和哪一期比
+            "scope": scope, "vs": vs, "vs_note": vs_note,
         }  # fmt: skip
 
     # ---------- 数据 ----------
@@ -210,7 +220,7 @@ class UsageReports:
         price = self.config.point_price
         per = self.config.monthly_allowance
         name = self.directory.user_name(open_id) if self.directory.user(open_id) else ""
-        kind, prev_label = period["kind"], period["prev_label"]
+        kind, vs = period["kind"], period["vs"]
         whose = "您和您负责的部门" if depts else "您"
         end = date.fromisoformat(period["end"])
         intro = f"这是{whose}在 **{period['label']}** 的{TITLE}{period['name']}。"
@@ -222,7 +232,7 @@ class UsageReports:
             stats = [("消耗点数", points(me["amount"])), ("消耗金额", money(me["amount"] * price)), ("使用次数", f"{me['records']:,}")]
             if kind != "daily":
                 stats.append(("使用天数", str(me["days"])))
-            elements.append(_stats([*stats, (f"比{prev_label}", delta(me["amount"], me["prev"]))]))
+            elements.append(_stats([*stats, (vs, delta(me["amount"], me["prev"]))]))
             if me["scenes"]:
                 elements.append(_md(scene_lines(me["scenes"], me["amount"])))
         else:
@@ -239,8 +249,9 @@ class UsageReports:
             if d["amount"] > 0:
                 per_capita = d["amount"] / d["active"] if d["active"] else 0.0
                 active = f"{d['active']} / {d['headcount']}" if d["headcount"] else str(d["active"])
-                elements.append(_stats([("部门点数", points(d["amount"])), ("部门金额", money(d["amount"] * price)), ("活跃人数", active),
-                                        ("人均点数", points(per_capita)), (f"比{prev_label}", delta(d["amount"], d["prev"]))]))  # fmt: skip
+                # 和个人用量同一个叫法：消耗点数、消耗金额（标题已经写了是部门用量）
+                elements.append(_stats([("消耗点数", points(d["amount"])), ("消耗金额", money(d["amount"] * price)), ("活跃人数", active),
+                                        ("人均点数", points(per_capita)), (vs, delta(d["amount"], d["prev"]))]))  # fmt: skip
                 lines = ["**用量最多的人**\n" + "\n".join(f"{RANKS[i]} {self.directory.user_name(oid)} · {points(v)} 点" for i, (oid, v) in enumerate(d["top"]))]
                 if d["scenes"]:
                     lines.append(scene_lines(d["scenes"], d["amount"]))
@@ -250,11 +261,12 @@ class UsageReports:
         if more_depts:
             elements.append(_md(f"您还负责 {more_depts} 个部门，在「部门运营」里切换部门查看。"))
 
-        # 最下面：一个「点击查看更多信息」按钮（打开平台首页）+ 数据截止时间。报表按整天统计（日报是昨天全天），不是发卡片那一刻的实时数据
+        # 最下面：一个「点击查看更多信息」按钮（打开平台首页）+ 统计时间（昨天 / 上周 / 上个月是哪几天，涨跌和哪一期比）。
+        # 报表统计的是整期的数据（日报是昨天全天），不是发卡片那一刻的实时数据
         elements.append({"tag": "hr"})
         button = {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "点击查看更多信息"}, "url": self.public_url}
         elements.append({"tag": "action", "actions": [button]})
-        note = f"数据截止时间：{end.year} 年 {end.month} 月 {end.day} 日 24:00（按整天统计）· 按 {price:g} 元/点折算"
+        note = f"统计时间：{period['scope']}，{period['vs_note']} · 按 {price:g} 元/点折算"
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
         return {
             "config": {"wide_screen_mode": True},
