@@ -27,6 +27,9 @@ LOG_PATH = "/open-apis/admin/v1/ai_usage_log/query"
 DETAIL_PATH = "/open-apis/admin/v1/ai_usage_detail/query"
 USAGE_MIN_GAP = 1.05  # 两个用量接口限频 1 次/秒；被限频时 _retry 会退避重试
 RATE_LIMIT_CODES = {99991400, 11232, 1000004}
+# Aily 应用统计一次查多少天、最多往前查几段（6 × 90 天，比用量日志能查到的一年多一点）
+AILY_WINDOW_DAYS = 90
+AILY_MAX_WINDOWS = 6
 # 较早开通灰度的企业可能还不认 10（飞书项目）、13（CodeM 沙箱）这两种应用类型
 LEGACY_APP_ENTITY_TYPES = (5, 6, 7, 8)
 
@@ -320,26 +323,35 @@ class FeishuClient:
                 out[app_id] = app["app_name"]
         return {k: v for k, v in out.items() if k in set(app_ids)}
 
-    def aily_app_names(self) -> dict[str, str]:
-        """Aily 应用和智能体的 ID → 名称（要配置 Aily 应用凭证，权限 aily:stats:read）。"""
+    def aily_app_names(self, since: int | None = None, want: set[str] | frozenset[str] = frozenset()) -> dict[str, str]:
+        """Aily 应用和智能体的 ID → 名称（要配置 Aily 应用凭证，权限 aily:stats:read）。
+
+        应用统计只列出那段时间里有人用过的应用，一次查 AILY_WINDOW_DAYS 天。先查最近这段，名称全收（改过名的也跟着更新）；
+        want 里还有没查到的（很久以前用过、最近没人用的智能体），再往前一段一段地查，直到 since（那些应用最早被用的时间）
+        或者都查到为止，最多 AILY_MAX_WINDOWS 段。往前查到的只收 want 里的。"""
         aily_id, aily_secret = self.vault.aily()
         if not aily_id:
             return {}
         token = self._token(aily_id, aily_secret)
-        now = int(time.time())
+        end = int(time.time())
         out: dict[str, str] = {}
-        for kind in ("app", "agent"):
-            params = {"start_at": str(now - 90 * 86400), "end_at": str(now), "filter_type": kind, "page_size": 100}
-            while True:
-                data = self._api("GET", "/open-apis/aily/v1/app_stats", "获取 Aily 应用统计", params=params, token=token)
-                for it in data.get("items") or []:
-                    if it.get("id") and it.get("name"):
-                        out[it["id"]] = it["name"]
-                if not data.get("has_more") or not data.get("page_token"):
-                    break
-                params["page_token"] = data["page_token"]
+        for window in range(AILY_MAX_WINDOWS):
+            start = end - AILY_WINDOW_DAYS * 86400
+            for kind in ("app", "agent"):
+                params = {"start_at": str(start), "end_at": str(end), "filter_type": kind, "page_size": 100}
+                while True:
+                    data = self._api("GET", "/open-apis/aily/v1/app_stats", "获取 Aily 应用统计", params=params, token=token)
+                    for it in data.get("items") or []:
+                        if it.get("id") and it.get("name") and (window == 0 or (it["id"] in want and it["id"] not in out)):
+                            out[it["id"]] = it["name"]
+                    if not data.get("has_more") or not data.get("page_token"):
+                        break
+                    params["page_token"] = data["page_token"]
+                    self.sleep(1.1)
                 self.sleep(1.1)
-            self.sleep(1.1)
+            if not set(want) - out.keys() or since is None or start <= since:
+                break
+            end = start
         return out
 
     # ---------- AI 用量 ----------
@@ -561,7 +573,8 @@ class FakeFeishu:
         self.calls.append(("app_names", tuple(app_ids)))
         return {i: self.apps[i] for i in app_ids if i in self.apps}
 
-    def aily_app_names(self) -> dict[str, str]:
+    def aily_app_names(self, since: int | None = None, want: set[str] | frozenset[str] = frozenset()) -> dict[str, str]:
+        self.calls.append(("aily_app_names", since, frozenset(want)))
         return dict(self.aily_apps)
 
     # ---- AI 用量 ----

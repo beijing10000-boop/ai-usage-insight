@@ -344,7 +344,7 @@ def register(app: FastAPI, c: Ctx) -> None:
                  "source": {"page": "页面填写", "env": "环境变量", "": ""}[llm["source"]], "on_page": bool(c.vault.get("llm_api_key"))}  # fmt: skip
         return c.page(
             "config.html", viewer, "config", request, apps=apps, unnamed=sum(1 for a in apps if not a["name"]), aily=bool(c.vault.aily()[0]), model=model,
-            price=c.config.point_price, sources={"manual": "手工", "api": "开放平台", "aily": "Aily"},
+            price=c.config.point_price, sources={"manual": "手工", "api": "开放平台", "aily": "Aily", "builtin": "内置"},
         )  # fmt: skip
 
     @app.post("/config")
