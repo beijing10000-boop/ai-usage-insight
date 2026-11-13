@@ -80,10 +80,15 @@ def _md(content: str, **extra) -> dict:
 
 
 def _stats(items: list[tuple[str, str]]) -> dict:
-    """一排指标：灰底、等宽、居中，上面是数值，下面是灰色的说明。"""
+    """一排指标：灰底、等宽、居中，上面是数值，下面是灰色的说明。
+
+    电脑上一行排开；手机（窄屏）上一行放不下 4 个以上，数字会被挤成两行，所以自动折行：
+    4 个排成 2 × 2（bisect），5、6 个排成每行 3 个（trisect）。
+    """
+    n = len(items)
     return {
         "tag": "column_set",
-        "flex_mode": "none",
+        "flex_mode": "none" if n <= 3 else "bisect" if n == 4 else "trisect",
         "background_style": "grey",
         "horizontal_spacing": "default",
         "columns": [
@@ -180,8 +185,12 @@ class UsageReports:
                     people[r["entity_id"]] = people.get(r["entity_id"], 0.0) + r["amount"]
             return out
 
+        dept_records: dict[str, int] = {}  # 部门的使用次数，和个人的「使用次数」一个算法
+        for r in cur.rows:
+            if r["subject"] == "member":
+                dept_records[r["department_id"]] = dept_records.get(r["department_id"], 0) + r["n"]
         return {"cur": cur, "prev": prev, "person_scenes": person_scenes, "dept_scenes": dept_scenes, "month_used": month_used,
-                "cur_depts": by_dept(cur), "prev_depts": by_dept(prev), "depts": {}}  # fmt: skip
+                "cur_depts": by_dept(cur), "prev_depts": by_dept(prev), "dept_records": dept_records, "depts": {}}  # fmt: skip
 
     def personal(self, data: dict, open_id: str) -> dict:
         me = data["cur"].by_member.get(open_id, {"amount": 0.0, "records": 0, "days": set()})
@@ -200,14 +209,16 @@ class UsageReports:
         people: dict[str, float] = {}
         scenes: dict[str, float] = {}
         prev = 0.0
+        records = 0
         for d in tree:
             for oid, v in data["cur_depts"].get(d, {}).items():
                 people[oid] = people.get(oid, 0.0) + v
             prev += sum(data["prev_depts"].get(d, {}).values())
+            records += data["dept_records"].get(d, 0)
             for key, v in data["dept_scenes"].get(d, {}).items():
                 scenes[key] = scenes.get(key, 0.0) + v
         out = data["depts"][dept_id] = {
-            "id": dept_id, "name": self.directory.dept_name(dept_id), "amount": sum(people.values()), "prev": prev,
+            "id": dept_id, "name": self.directory.dept_name(dept_id), "amount": sum(people.values()), "prev": prev, "records": records,
             "active": len(people), "headcount": self.directory.headcount(dept_id),
             "top": sorted(people.items(), key=lambda kv: -kv[1])[:TOP_PEOPLE],
             "scenes": sorted(scenes.items(), key=lambda kv: -kv[1])[:TOP_SCENES],
@@ -249,9 +260,9 @@ class UsageReports:
             if d["amount"] > 0:
                 per_capita = d["amount"] / d["active"] if d["active"] else 0.0
                 active = f"{d['active']} / {d['headcount']}" if d["headcount"] else str(d["active"])
-                # 和个人用量同一个叫法：消耗点数、消耗金额（标题已经写了是部门用量）
-                elements.append(_stats([("消耗点数", points(d["amount"])), ("消耗金额", money(d["amount"] * price)), ("活跃人数", active),
-                                        ("人均点数", points(per_capita)), (vs, delta(d["amount"], d["prev"]))]))  # fmt: skip
+                # 前三个和个人用量同一个叫法、同一个顺序：消耗点数、消耗金额、使用次数（标题已经写了是部门用量）；手机上正好排成 3 + 3
+                elements.append(_stats([("消耗点数", points(d["amount"])), ("消耗金额", money(d["amount"] * price)), ("使用次数", f"{d['records']:,}"),
+                                        ("活跃人数", active), ("人均点数", points(per_capita)), (vs, delta(d["amount"], d["prev"]))]))  # fmt: skip
                 lines = ["**用量最多的人**\n" + "\n".join(f"{RANKS[i]} {self.directory.user_name(oid)} · {points(v)} 点" for i, (oid, v) in enumerate(d["top"]))]
                 if d["scenes"]:
                     lines.append(scene_lines(d["scenes"], d["amount"]))

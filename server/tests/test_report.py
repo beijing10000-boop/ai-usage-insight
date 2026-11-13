@@ -78,7 +78,12 @@ def test_personal_and_department_cards(env):
     assert stat_row(mine) == [("消耗点数", "30"), ("消耗金额", "¥1.50"), ("使用次数", "2"), (vs, "—")]  # 上周同一天没有数据：—
     # 部门一排指标：点数、金额、活跃人数、人均、比上周同一天；下面是排名和常用场景（带编号）
     dept = next(e for e in card["elements"] if e["tag"] == "column_set" and e is not mine)
-    assert stat_row(dept) == [("消耗点数", "31"), ("消耗金额", "¥1.55"), ("活跃人数", "2 / 2"), ("人均点数", "15.5"), (vs, "—")]  # 和个人同一个叫法
+    # 前三个和个人同一个叫法、同一个顺序；部门的使用次数 = 部门里每个人的使用次数加起来
+    by_member = data["cur"].by_member
+    assert rd["records"] == by_member["ou_bob"]["records"] + by_member["ou_dave"]["records"]
+    assert stat_row(dept) == [("消耗点数", "31"), ("消耗金额", "¥1.55"), ("使用次数", str(rd["records"])), ("活跃人数", "2 / 2"), ("人均点数", "15.5"), (vs, "—")]
+    # 手机上自动折行：4 个排成 2 × 2，6 个每行 3 个（电脑上还是一行）
+    assert (mine["flex_mode"], dept["flex_mode"]) == ("bisect", "trisect")
     assert "研发部 · 部门用量" in text and "① 鲍勃 · 30 点" in text and "活跃 **" not in text and "人均 " not in text
     assert "主要场景" not in text and text.count("**常用场景**\n① ") == 2  # 个人和部门一样：常用场景 + ①②③
     assert "🥇" not in text  # 排名用圈数字，不用奖牌
@@ -101,6 +106,7 @@ def test_personal_and_department_cards(env):
     # 周报：个人那排多一列「使用天数」
     weekly = report.card(report.period("weekly"), "ou_bob", {**me, "days": 1}, [])
     assert stat_row(weekly["elements"][2]) == [("消耗点数", "30"), ("消耗金额", "¥1.50"), ("使用次数", "2"), ("使用天数", "1"), ("比前一周", "—")]
+    assert weekly["elements"][2]["flex_mode"] == "trisect"  # 5 个：手机上 3 + 2
 
 
 def test_monthly_allowance_line(env):
