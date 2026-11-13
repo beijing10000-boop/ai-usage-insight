@@ -18,10 +18,12 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "allowance": {"per_member": 0},
     # 报表发送（日报 / 周报 / 月报，各自一个开关）。scope 三种报表共用：active（这一期有用量的人，部门负责人只要部门有用量也发）
     # | all（通讯录里所有人）。日报发昨天的；周报 weekday 1..7 = 周一..周日，发上一周；月报 day 1..28 号，发上个月
+    # last_push_date：定时任务上次发送是哪天；last_period：最近一次全量发送（定时或手动）发的是哪一期（这一期的第一天），
+    # 同一期只自动发一次——手动全量发过的，定时就不再发
     "report": {"scope": "active"},
-    "report_daily": {"enabled": False, "hour": 9, "last_push_date": ""},
-    "report_weekly": {"enabled": False, "weekday": 1, "hour": 9, "last_push_date": ""},
-    "report_monthly": {"enabled": False, "day": 1, "hour": 9, "last_push_date": ""},
+    "report_daily": {"enabled": False, "hour": 9, "last_push_date": "", "last_period": ""},
+    "report_weekly": {"enabled": False, "weekday": 1, "hour": 9, "last_push_date": "", "last_period": ""},
+    "report_monthly": {"enabled": False, "day": 1, "hour": 9, "last_push_date": "", "last_period": ""},
 }
 
 

@@ -77,6 +77,7 @@ def create_app(settings: Settings | None = None, feishu=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         engine.start_worker()  # 同步线程总是要有，不然手动同步会一直「等待中」；启动时先把上次没跑完的任务从断点续上
+        report.recover()  # 上次被重启打断的报表发送记成「已中断」，不然一直显示「发送中」
         if s.scheduler:  # AIUS_SCHEDULER=0 只关掉「到点自动做」的事：定时同步、巡检、周报、通讯录定时同步
             directory.start()  # 快照过期（或从没同步过）时立即同步一次
             scheduler.start()

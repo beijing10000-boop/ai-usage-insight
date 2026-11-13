@@ -165,6 +165,69 @@ def test_due_rules(env):
     assert not report.due("weekly", wed)
 
 
+def test_a_manual_full_send_is_not_sent_again_by_the_schedule(env):
+    """手动「立即全量发送」过的那一期，定时任务不再发（以前会在当天到点后再发一遍，每人收到两张）。"""
+    report, config = env.ctx.report, env.ctx.config
+    report.sleep = lambda _s: None
+    now = datetime.now(CST)
+    config.save("report_daily", {"enabled": True, "hour": 0}, "ou_admin")
+    config.save("report_weekly", {"enabled": True, "weekday": now.isoweekday(), "hour": 0}, "ou_admin")
+    assert report.due("daily", now) and report.due("weekly", now)
+    report.push("daily", "test", "ou_admin", only=["ou_admin"])  # 测试发送不算
+    assert report.due("daily", now) and not report.handled("daily", now)
+    report.push("daily", "manual", "ou_admin")
+    report.push("weekly", "manual", "ou_admin")
+    assert not report.due("daily", now) and not report.due("weekly", now) and report.handled("daily", now)
+    assert report.tick(now) == []
+    assert config.get("report_daily")["last_period"] == report.period("daily")["start"]
+
+
+def test_saving_a_switch_after_send_time_does_not_send_right_away(env):
+    """打开开关（或改发送时间）时已经过了今天的发送时间：这一期不补发，从下一个发送时间开始。"""
+    report = env.ctx.report
+    wed10 = datetime(2026, 11, 11, 10, 0, tzinfo=CST)  # 周三 10 点
+    saved = report.save("daily", {"enabled": True, "hour": 9}, "ou_admin", now=wed10)
+    assert saved["skipped"] and not report.due("daily", wed10) and report.due("daily", wed10 + timedelta(days=1, hours=-1))
+    # 还没到发送时间就打开：今天照常发
+    saved = report.save("weekly", {"enabled": True, "weekday": 3, "hour": 11}, "ou_admin", now=wed10)
+    assert not saved["skipped"] and report.due("weekly", wed10.replace(hour=11))
+    # 月报：13 号打开「每月 1 日」不补发上个月的，下个月 1 日照常
+    nov13 = datetime(2026, 11, 13, 10, tzinfo=CST)
+    assert report.save("monthly", {"enabled": True, "day": 1, "hour": 9}, "ou_admin", now=nov13)["skipped"]
+    assert not report.due("monthly", nov13) and report.due("monthly", datetime(2026, 12, 1, 9, tzinfo=CST))
+    # 本来就开着、到点了还没发出去的（比如同步在跑）：再保存一次不会把这一期取消
+    thu10 = wed10 + timedelta(days=1)
+    report.save("daily", {"enabled": True, "hour": 9}, "ou_admin", now=thu10 - timedelta(hours=2))
+    assert report.due("daily", thu10)
+    assert not report.save("daily", {"enabled": True, "hour": 9}, "ou_admin", now=thu10)["skipped"] and report.due("daily", thu10)
+
+
+def test_send_progress_and_interrupted_runs(env):
+    """每发一个人记一次进度；服务重启时没发完的那一轮记成「已中断」。"""
+    report = env.ctx.report
+    report.sleep = lambda _s: None
+    seen = []
+    send = env.feishu.send_card
+
+    def watch(open_id, card):
+        seen.append(env.db.val("SELECT sent FROM report_runs ORDER BY id DESC LIMIT 1"))
+        send(open_id, card)
+
+    env.feishu.send_card = watch
+    run = report.push("daily", "manual", "ou_admin")
+    assert run["sent"] == 5 and seen == [0, 1, 2, 3, 4]  # 发每个人之前，前面的都已经记上了
+    now = int(time.time())
+    insert = "INSERT INTO report_runs(kind, week_start, week_end, trigger, actor, status, total, sent, failed, started_at) VALUES('daily',?,?,?,?,'running',?,?,?,?)"
+    env.db.x(insert, (D1, D1, "manual", "ou_admin", 10, 4, 1, now))
+    env.db.x(insert, (D1, D1, "schedule", "system", 8, 0, 0, now))
+    assert report.recover() == 2 and report.recover() == 0
+    runs = report.runs()
+    assert [r["status"] for r in runs[:2]] == ["interrupted", "interrupted"] and all(r["finished_at"] for r in runs[:2])
+    assert runs[1]["error"] == "服务重启，这一轮发送中断：已发 4 人，5 人没有发到" and runs[0]["error"] == "服务重启，这一轮发送中断，没有发完"
+    page = env.browser("admin@example.com").get("/reports").text
+    assert "已中断" in page and "没有发完" in page
+
+
 def test_tick_marks_and_sends_in_the_background(env):
     report, config = env.ctx.report, env.ctx.config
     report.sleep = lambda _s: None

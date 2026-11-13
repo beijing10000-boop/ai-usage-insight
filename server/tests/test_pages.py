@@ -259,9 +259,14 @@ def test_reports_page_actions(env):
     page = c.get("/reports").text
     assert all(f'id="{k}"' in page for k in ("daily", "weekly", "monthly")) and page.count("已关闭") == 3  # 默认三个都关着
     assert 'class="nav-link active" href="/reports"' in page
-    r = c.post("/reports", data={"action": "save", "kind": "weekly", "enabled": "1", "weekday": "3", "hour": "10"})
+    tomorrow = datetime.now(CST).isoweekday() % 7 + 1  # 不是今天：保存后今天不会到点
+    r = c.post("/reports", data={"action": "save", "kind": "weekly", "enabled": "1", "weekday": str(tomorrow), "hour": "10"})
     assert r.headers["location"] == "/reports?done=saved#weekly"
-    assert env.ctx.config.get("report_weekly") == {"enabled": True, "weekday": 3, "hour": 10, "last_push_date": ""}
+    assert env.ctx.config.get("report_weekly") == {"enabled": True, "weekday": tomorrow, "hour": 10, "last_push_date": "", "last_period": ""}
+    # 打开开关时今天已经过了发送时间：这一期不补发，提示从下一个发送时间开始
+    r = c.post("/reports", data={"action": "save", "kind": "daily", "enabled": "1", "hour": "0"})
+    assert r.headers["location"] == "/reports?done=report_saved_skip#daily" and not env.ctx.report.due("daily", datetime.now(CST))
+    assert "定时不会再发" in c.get("/reports").text and "不自动补发" in env.db.val("SELECT detail FROM audit_log WHERE action='report' ORDER BY id DESC LIMIT 1")
     c.post("/reports", data={"action": "save", "kind": "monthly", "enabled": "0", "day": "5", "hour": "8"})
     assert env.ctx.config.get("report_monthly")["day"] == 5 and not env.ctx.config.get("report_monthly")["enabled"]
     assert c.post("/reports", data={"action": "save", "kind": "monthly", "day": "31", "hour": "8"}).status_code == 400
