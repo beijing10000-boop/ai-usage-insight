@@ -12,7 +12,7 @@ from aius_server.db import dumps, loads
 from aius_server.feishu import LEGACY_APP_ENTITY_TYPES, FeishuError, day_range
 from aius_server.labels import APP_ENTITY_TYPES
 from aius_server.sync import LIVE_CURSOR, LIVE_OVERLAP, SyncError, segments, today
-from conftest import D0, D1, D2, MEMBER_D1, log, stamped
+from conftest import D0, D1, D2, MEMBER_D1, app_log, log, stamped
 
 
 def count(env, table: str, where: str = "1=1") -> int:
@@ -350,6 +350,26 @@ def test_names_of_people_and_apps_outside_the_directory_are_resolved(empty):
     assert empty.ctx.directory.user_name("ou_gone") == "已离职的人"
     assert empty.ctx.directory.dept_name("d-old") == "d-old"  # 查不到名称的部门先显示 ID
     assert empty.ctx.analytics.app_names() == {"cli_a": "客服机器人"}
+
+
+def test_old_aily_agents_and_builtin_apps_get_names(env):
+    """很久以前用过、最近没人用的 Aily 智能体：告诉接口缺哪些、从最早用的那天查起；飞书项目 AI 用内置名称。不限这次同步的日期。"""
+    env.feishu.usage[("log", "app", D2)] = stamped(
+        [app_log("agent_old", 2, etype=8, scenario="飞书 Aily>智能伙伴>日常对话"), app_log("meego_ai", 1, etype=10, scenario="飞书项目>AI>对话")], D2
+    )
+    env.sync(D2, D2)  # 这时 Aily 还查不到 agent_old
+    names = env.ctx.analytics.app_names()
+    assert "agent_old" not in names and names["meego_ai"] == "飞书项目 AI"
+    assert env.db.val("SELECT source FROM app_mapping WHERE app_id='meego_ai'") == "builtin"
+    env.feishu.aily_apps = {"agent_old": "老助手"}
+    env.feishu.calls.clear()
+    env.sync(D1, D1)  # 这次只同步 D1，agent_old 只在 D2 用过，照样补上
+    call = next(c for c in env.feishu.calls if c[0] == "aily_app_names")
+    assert call[1] == day_range(D2)[0] and {"agent_old", "spring_b__c"} <= call[2]
+    assert env.ctx.analytics.app_names()["agent_old"] == "老助手"
+    env.ctx.engine.save_app_names({"meego_ai": "飞书项目"}, "manual", "ou_admin")  # 手工改的名称不会被内置名称盖掉
+    env.sync(D1, D1)
+    assert env.ctx.analytics.app_names()["meego_ai"] == "飞书项目"
 
 
 def test_manual_app_names_are_not_overwritten_by_sync(env):

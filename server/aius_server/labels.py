@@ -18,6 +18,10 @@ ENTITY_TYPES = {
 }
 # 应用维度要查的实体类型；entity_ids 传 -1 表示这一类全选
 APP_ENTITY_TYPES = (5, 6, 7, 8, 10, 13)
+# 名称从 Aily 应用统计里查的类型
+AILY_ENTITY_TYPES = (6, 8)
+# 接口不给名称、开放平台和 Aily 也查不到的固定应用 ID → 显示的名称
+KNOWN_APP_NAMES = {"meego_ai": "飞书项目 AI"}
 
 # 消耗的 AI 额度类型
 FEATURE_KEYS = {

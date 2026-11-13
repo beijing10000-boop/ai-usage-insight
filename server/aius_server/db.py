@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS reconcile (
     checked_at    INTEGER NOT NULL,
     PRIMARY KEY (usage_date, subject)
 );
--- 应用名称映射。source: api（开放平台应用信息）| aily（Aily 应用统计）| manual（手工维护，优先级最高）
+-- 应用名称映射。source: api（开放平台应用信息）| aily（Aily 应用统计）| builtin（labels.KNOWN_APP_NAMES）| manual（手工维护，优先级最高）
 CREATE TABLE IF NOT EXISTS app_mapping (
     app_id     TEXT PRIMARY KEY,
     name       TEXT NOT NULL,

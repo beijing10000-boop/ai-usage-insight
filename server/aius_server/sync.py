@@ -22,7 +22,7 @@ from . import labels
 from .db import AGG_INSERT, Database, dumps, loads
 from .directory import Directory
 from .feishu import CST, LEGACY_APP_ENTITY_TYPES, FeishuError, day_range
-from .labels import APP_ENTITY_TYPES, DETAIL_FIELDS, clean_scenario
+from .labels import AILY_ENTITY_TYPES, APP_ENTITY_TYPES, DETAIL_FIELDS, clean_scenario
 
 log = logging.getLogger("aius")
 
@@ -610,13 +610,28 @@ class SyncEngine:
             found.update(self.feishu.app_names([i for i in missing if i not in found]))
             return self.save_app_names(found, "api")
 
+        def unnamed_apps(types: tuple[int, ...] | None = None) -> dict[str, str]:
+            """用量数据里出现过（不限这次同步的日期）、还没有名称的应用 → 最早被用的那天。"""
+            known = {r[0] for r in self.db.q("SELECT app_id FROM app_mapping")}
+            where = f" AND entity_type IN ({','.join(str(t) for t in types)})" if types else ""
+            rows = self.db.q(f"SELECT entity_id, MIN(usage_date) AS first FROM usage_agg WHERE subject='app'{where} GROUP BY entity_id")
+            return {r["entity_id"]: r["first"] for r in rows if r["entity_id"] not in known}
+
         def aily() -> int:
-            return self.save_app_names(self.feishu.aily_app_names(), "aily")
+            # 很久以前用过、最近没人用的智能体，最近一段的应用统计里没有：告诉接口还缺哪些、最早从哪天查起
+            missing = unnamed_apps(AILY_ENTITY_TYPES)
+            since = day_range(min(missing.values()))[0] if missing else None
+            return self.save_app_names(self.feishu.aily_app_names(since=since, want=set(missing)), "aily")
+
+        def builtin() -> int:
+            missing = unnamed_apps()
+            return self.save_app_names({i: labels.KNOWN_APP_NAMES[i] for i in missing if i in labels.KNOWN_APP_NAMES}, "builtin")
 
         attempt("人员名称", users)
         attempt("部门名称", depts)
         attempt("应用名称", apps)
         attempt("Aily 应用名称", aily)
+        attempt("内置应用名称", builtin)
         if notes:
             self._step(run_id, end, "names", 0, 0, "failed" if failed else "ok", "；".join(notes))
 

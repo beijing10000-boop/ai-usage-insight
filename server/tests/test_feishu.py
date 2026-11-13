@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -225,6 +226,36 @@ def test_aily_names_use_the_aily_app_credentials():
     assert set(tokens) == {"Bearer t-cli_aily"}
     plain, _ = client(handler)
     assert plain.aily_app_names() == {}
+
+
+def test_aily_names_look_further_back_for_agents_nobody_used_lately():
+    """应用统计只列出那段时间有人用过的应用：最近没人用的智能体要往前一段一段地查，查到了就停。"""
+    windows = []
+    now = int(time.time())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        start, end = int(request.url.params["start_at"]), int(request.url.params["end_at"])
+        assert end - start == 90 * 86400
+        age = round((now - end) / 86400)  # 这一段离现在多少天
+        if request.url.params["filter_type"] == "agent":
+            windows.append(age)
+        items = {0: [{"id": "agent_new", "name": "新助手"}], 90: [{"id": "agent_other", "name": "别的"}],
+                 180: [{"id": "agent_old", "name": "老助手"}, {"id": "agent_other", "name": "别的"}]}.get(age, [])  # fmt: skip
+        return httpx.Response(200, json={"code": 0, "data": {"items": items if request.url.params["filter_type"] == "agent" else [], "has_more": False}})
+
+    fs, _ = client(handler, aily_app_id="cli_aily", aily_app_secret="s2")
+    # 不缺名称：只查最近一段，名称全收
+    assert fs.aily_app_names() == {"agent_new": "新助手"} and windows == [0]
+    windows.clear()
+    # 缺一个很久以前用过的：往前查到它就停，往前查到的只收缺的那个
+    got = fs.aily_app_names(since=now - 400 * 86400, want={"agent_old"})
+    assert got == {"agent_new": "新助手", "agent_old": "老助手"} and windows == [0, 90, 180]
+    windows.clear()
+    # 查不到的（智能体删了）：查到 since 那段为止，最多 6 段
+    assert fs.aily_app_names(since=now - 100 * 86400, want={"agent_gone"}) == {"agent_new": "新助手"} and windows == [0, 90]
+    windows.clear()
+    fs.aily_app_names(since=0, want={"agent_gone"})
+    assert windows == [0, 90, 180, 270, 360, 450]
 
 
 def test_check_reports_connection_and_tenant():
