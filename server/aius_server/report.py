@@ -2,7 +2,7 @@
 
 - 每个人：这一期自己用了多少点、折算多少钱、和上一期比、用了几次、常用场景，以及这个月的基础额度用到了哪儿。
 - 部门负责人：再加上他负责的部门（含下级）这一期的用量、活跃人数、用量最多的人和主要场景（最多 MAX_DEPTS 个部门）。
-- 卡片最下面写「更多信息请查看」和平台的网址，再给按钮直接打开这一期的明细；开头和脚注写明数据统计到哪天 24:00（按整天统计）。
+- 卡片最下面写「更多信息请查看」和平台的网址、一个「更多信息查看」按钮，最后一行是数据截止时间（按整天统计，到哪天 24:00）。
 - 用平台自己的飞书应用（机器人）发送。
 
 日报发昨天的，和上周同一天比（和前一天比会被周末带偏）；周报发上一个自然周；月报发上一个自然月。
@@ -213,9 +213,7 @@ class UsageReports:
         kind, prev_label = period["kind"], period["prev_label"]
         whose = "你和你负责的部门" if depts else "你"
         end = date.fromisoformat(period["end"])
-        cutoff = f"{end.month} 月 {end.day} 日 24:00"
-        # 报表按整天统计（日报是昨天全天），不是发卡片那一刻的实时数据：写明统计到什么时候
-        elements: list[dict] = [_md(f"Hi，**{name or '你好'}**\n这是{whose}在 **{period['label']}** 的{TITLE}{period['name']}，数据按整天统计，截至 **{cutoff}**。")]
+        elements: list[dict] = [_md(f"Hi，**{name or '你好'}**\n这是{whose}在 **{period['label']}** 的{TITLE}{period['name']}。")]
 
         # 我的用量
         elements.append(_md("**👤 我的用量**"))
@@ -253,16 +251,12 @@ class UsageReports:
         if more_depts:
             elements.append(_md(f"你还负责 {more_depts} 个部门，在「部门运营」里切换部门查看。"))
 
-        # 更多信息请查看 + 平台网址（按钮直接打开这一期的明细）
-        url = self.link("/self-usage", **period["query"])
+        # 最下面：平台网址 + 一个「更多信息查看」按钮 + 数据截止时间。报表按整天统计（日报是昨天全天），不是发卡片那一刻的实时数据
         elements.append({"tag": "hr"})
         elements.append(_md(f"**更多信息请查看：**[{self.public_url}]({self.public_url})"))
-        buttons = [{"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "查看我的用量"}, "url": url}]
-        if depts:
-            dept_url = self.link("/dept-ops", dept=depts[0]["id"], **period["query"])
-            buttons.append({"tag": "button", "type": "default", "text": {"tag": "plain_text", "content": "查看部门运营"}, "url": dept_url})
-        elements.append({"tag": "action", "actions": buttons})
-        note = f"数据截至 {period['end']} 24:00（按整天统计）· 按 {price:g} 元/点折算 · 在公司网络里用飞书登录后查看"
+        button = {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "更多信息查看"}, "url": self.public_url}
+        elements.append({"tag": "action", "actions": [button]})
+        note = f"数据截止时间：{end.year} 年 {end.month} 月 {end.day} 日 24:00（按整天统计）· 按 {price:g} 元/点折算 · 在公司网络里用飞书登录后查看"
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
         return {
             "config": {"wide_screen_mode": True},
