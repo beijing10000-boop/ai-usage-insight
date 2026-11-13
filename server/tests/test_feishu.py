@@ -224,6 +224,7 @@ def test_aily_names_use_the_aily_app_credentials():
     fs, _ = client(handler, aily_app_id="cli_aily", aily_app_secret="s2")
     assert fs.aily_app_names() == {"spring_x__c": "合同审核"}
     assert set(tokens) == {"Bearer t-cli_aily"}
+    assert fs.aily_app_info() == {"spring_x__c": {"name": "合同审核", "owner": "", "created": ""}}  # 没带 owner 的不出错
     plain, _ = client(handler)
     assert plain.aily_app_names() == {}
 
@@ -239,13 +240,16 @@ def test_aily_names_look_further_back_for_agents_nobody_used_lately():
         age = round((now - end) / 86400)  # 这一段离现在多少天
         if request.url.params["filter_type"] == "agent":
             windows.append(age)
-        items = {0: [{"id": "agent_new", "name": "新助手"}], 90: [{"id": "agent_other", "name": "别的"}],
+        new = {"id": "agent_new", "name": "新助手", "appCreatedAt": "2026-08-17 15:45:42", "owner": {"name": "安娜", "open_id": "ou_x"}}
+        items = {0: [new], 90: [{"id": "agent_other", "name": "别的"}],
                  180: [{"id": "agent_old", "name": "老助手"}, {"id": "agent_other", "name": "别的"}]}.get(age, [])  # fmt: skip
         return httpx.Response(200, json={"code": 0, "data": {"items": items if request.url.params["filter_type"] == "agent" else [], "has_more": False}})
 
     fs, _ = client(handler, aily_app_id="cli_aily", aily_app_secret="s2")
-    # 不缺名称：只查最近一段，名称全收
+    # 不缺名称：只查最近一段，名称全收；所有者和创建时间一起带回来
     assert fs.aily_app_names() == {"agent_new": "新助手"} and windows == [0]
+    assert fs.aily_app_info()["agent_new"] == {"name": "新助手", "owner": "安娜", "created": "2026-08-17 15:45:42"}
+    windows.clear()
     windows.clear()
     # 缺一个很久以前用过的：往前查到它就停，往前查到的只收缺的那个
     got = fs.aily_app_names(since=now - 400 * 86400, want={"agent_old"})

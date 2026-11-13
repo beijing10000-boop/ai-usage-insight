@@ -618,10 +618,15 @@ class SyncEngine:
             return {r["entity_id"]: r["first"] for r in rows if r["entity_id"] not in known}
 
         def aily() -> int:
-            # 很久以前用过、最近没人用的智能体，最近一段的应用统计里没有：告诉接口还缺哪些、最早从哪天查起
-            missing = unnamed_apps(AILY_ENTITY_TYPES)
+            # 很久以前用过、最近没人用的智能体，最近一段的应用统计里没有：告诉接口还缺哪些（没名称或没所有者的）、最早从哪天查起
+            owned = {r[0] for r in self.db.q("SELECT app_id FROM app_owners")}
+            types = ",".join(str(t) for t in AILY_ENTITY_TYPES)
+            used = {r[0]: r[1] for r in self.db.q(f"SELECT entity_id, MIN(usage_date) FROM usage_agg WHERE subject='app' AND entity_type IN ({types}) GROUP BY entity_id")}
+            missing = {**unnamed_apps(AILY_ENTITY_TYPES), **{k: v for k, v in used.items() if k not in owned}}
             since = day_range(min(missing.values()))[0] if missing else None
-            return self.save_app_names(self.feishu.aily_app_names(since=since, want=set(missing)), "aily")
+            info = self.feishu.aily_app_info(since=since, want=set(missing))
+            self.save_app_owners({k: v for k, v in info.items() if v.get("owner")})
+            return self.save_app_names({k: v["name"] for k, v in info.items()}, "aily")
 
         def builtin() -> int:
             missing = unnamed_apps()
@@ -634,6 +639,18 @@ class SyncEngine:
         attempt("内置应用名称", builtin)
         if notes:
             self._step(run_id, end, "names", 0, 0, "failed" if failed else "ok", "；".join(notes))
+
+    def save_app_owners(self, info: dict[str, dict]) -> int:
+        """记下应用的所有者和创建时间（Aily 应用统计给的）。"""
+        now = int(time.time())
+        with self.db.tx() as c:
+            for app_id, v in info.items():
+                c.execute(
+                    "INSERT INTO app_owners(app_id, owner, created, updated_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(app_id) DO UPDATE SET owner=excluded.owner, created=excluded.created, updated_at=excluded.updated_at",
+                    (app_id, v["owner"].strip()[:100], v.get("created", "")[:19], now),
+                )
+        return len(info)
 
     def save_app_names(self, names: dict[str, str], source: str, actor: str = "system") -> int:
         """写入应用名称映射。手工维护的优先级最高，自动解析的不覆盖它。"""

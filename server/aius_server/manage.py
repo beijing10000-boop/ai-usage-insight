@@ -321,15 +321,17 @@ def register(app: FastAPI, c: Ctx) -> None:
     def app_rows() -> list[dict]:
         """用量数据里出现过的应用，加上映射表里有的，各自现在显示什么名称。"""
         mapping = {r["app_id"]: r for r in c.db.q("SELECT * FROM app_mapping")}
+        owners = {r["app_id"]: r for r in c.db.q("SELECT * FROM app_owners")}
         seen = {r["entity_id"]: r for r in c.db.q(
             "SELECT entity_id, MAX(entity_type) AS t, SUM(amount) AS amount, MAX(usage_date) AS last FROM usage_agg WHERE subject='app' GROUP BY entity_id"
         )}  # fmt: skip
         out = []
         for app_id in {*mapping, *seen}:
-            m, s = mapping.get(app_id), seen.get(app_id)
+            m, s, o = mapping.get(app_id), seen.get(app_id), owners.get(app_id)
             out.append({
                 "id": app_id, "name": m["name"] if m else "", "source": m["source"] if m else "", "updated_at": m["updated_at"] if m else None,
                 "type": entity_type(s["t"]) if s else "", "amount": round(s["amount"], 2) if s else 0, "last": s["last"] if s else "",
+                "owner": o["owner"] if o else "", "created": o["created"][:10] if o else "",
             })  # fmt: skip
         return sorted(out, key=lambda r: (bool(r["name"]), -r["amount"]))
 

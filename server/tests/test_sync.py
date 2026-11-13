@@ -157,7 +157,7 @@ def test_old_databases_get_the_progress_column(tmp_path):
     c.commit()
     c.close()
     db = Database(path)
-    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 5
+    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 6
     assert db.val("SELECT COUNT(*) FROM reconcile") == 0  # v4 的数据核对表也补上了
     assert db.val("SELECT kind FROM report_runs WHERE id=1") == "weekly"  # v5：老的周报记录算周报
 
@@ -362,11 +362,21 @@ def test_old_aily_agents_and_builtin_apps_get_names(env):
     assert "agent_old" not in names and names["meego_ai"] == "飞书项目 AI"
     assert env.db.val("SELECT source FROM app_mapping WHERE app_id='meego_ai'") == "builtin"
     env.feishu.aily_apps = {"agent_old": "老助手"}
+    env.feishu.aily_owners = {"agent_old": "安娜"}
     env.feishu.calls.clear()
     env.sync(D1, D1)  # 这次只同步 D1，agent_old 只在 D2 用过，照样补上
-    call = next(c for c in env.feishu.calls if c[0] == "aily_app_names")
+    call = next(c for c in env.feishu.calls if c[0] == "aily_app_info")
     assert call[1] == day_range(D2)[0] and {"agent_old", "spring_b__c"} <= call[2]
     assert env.ctx.analytics.app_names()["agent_old"] == "老助手"
+    # 所有者也记下来：应用映射页一列、驾驶舱应用排行的小字里都有
+    assert env.db.val("SELECT owner FROM app_owners WHERE app_id='agent_old'") == "安娜"
+    admin = env.browser("admin@example.com")
+    assert "所有者" in admin.get("/config").text and "安娜" in admin.get("/config").text
+    assert "所有者 安娜" in admin.get("/dashboard", params={"start": D2, "end": D1}).text
+    # 名称和所有者都有了：下次不再往前查它
+    env.feishu.calls.clear()
+    env.sync(D1, D1)
+    assert "agent_old" not in next(c for c in env.feishu.calls if c[0] == "aily_app_info")[2]
     env.ctx.engine.save_app_names({"meego_ai": "飞书项目"}, "manual", "ou_admin")  # 手工改的名称不会被内置名称盖掉
     env.sync(D1, D1)
     assert env.ctx.analytics.app_names()["meego_ai"] == "飞书项目"

@@ -5,7 +5,7 @@
 {% block content %}
 <section class="panel" id="apps">
   <div class="section-head">
-    <div><h2>应用映射</h2><p>把用量数据里的应用 ID 显示成名称。名称来源依次是：手工维护 → Aily 应用统计（往前最多查一年多，很久没人用的智能体也能查到）→ 开放平台应用信息 → 内置名称（如飞书项目 AI）；都没有就显示 ID。同步任务结束时自动补查{% if unnamed %}。现在有 <b>{{ unnamed }}</b> 个应用还没有名称{% endif %}</p></div>
+    <div><h2>应用映射</h2><p>把用量数据里的应用 ID 显示成名称。名称来源依次是：手工维护 → Aily 应用统计（往前最多查一年多，很久没人用的智能体也能查到）→ 开放平台应用信息 → 内置名称（如飞书项目 AI）；都没有就显示 ID。所有者来自 Aily 应用统计（Aily 应用和智能体才有）。同步任务结束时自动补查{% if unnamed %}。现在有 <b>{{ unnamed }}</b> 个应用还没有名称{% endif %}</p></div>
   </div>
   {% if not aily %}<p class="notice">还没有配置 Aily 应用凭证（在「同步管理 → 修改凭证」里填），Aily 工作流应用和智能体的名称不会自动解析，需要在这里手工填。</p>{% endif %}
   <form method="post" action="/config" class="add-row">
@@ -20,13 +20,14 @@
   <div class="toolbar"><input type="search" data-filter-input="app-table" placeholder="按名称或应用 ID 筛选" aria-label="筛选应用" /></div>
   <div class="table-wrap">
     <table id="app-table">
-      <thead><tr><th>应用</th><th>应用 ID</th><th>类型</th><th>名称来源</th><th class="num">累计用量（点）</th><th>最近使用</th><th></th></tr></thead>
+      <thead><tr><th>应用</th><th>应用 ID</th><th>类型</th><th>所有者</th><th>名称来源</th><th class="num">累计用量（点）</th><th>最近使用</th><th></th></tr></thead>
       <tbody>
         {% for a in apps %}
         <tr>
           <td>{% if a.name %}<span class="cell-title">{{ a.name }}</span>{% else %}<span class="tag warn">还没有名称</span>{% endif %}</td>
           <td class="mono">{{ a.id }}</td>
           <td>{{ a.type or "—" }}</td>
+          <td>{% if a.owner %}{{ a.owner }}{% if a.created %}<small>{{ a.created }} 创建</small>{% endif %}{% else %}—{% endif %}</td>
           <td>{{ sources.get(a.source, "—") }}</td>
           <td class="num">{{ a.amount|num if a.amount else "—" }}</td>
           <td class="nowrap">{{ a.last or "—" }}</td>
