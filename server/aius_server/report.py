@@ -6,12 +6,16 @@
 - 用平台自己的飞书应用（机器人）发送。
 
 日报发昨天的，和上周同一天比（和前一天比会被周末带偏）；周报发上一个自然周；月报发上一个自然月。
-发送用应用机器人（应用要开机器人能力和 im:message:send_as_bot 权限）。每种报表一期只自动发一次；
-「测试发送给我」只发给点按钮的人自己。有同步任务在跑时（数据正在整批替换）先不发，等它跑完再发。
+发送用应用机器人（应用要开机器人能力和 im:message:send_as_bot 权限）。每种报表一期只自动发一次：
+定时发过的、或者手动「立即全量发送」发过的那一期，定时任务都不会再发；保存设置（比如刚打开开关）不会立刻补发
+已经过了发送时间的这一期，从下一个发送时间开始发。「测试发送给我」只发给点按钮的人自己，不用等正在进行的全量发送。
+有同步任务在跑时（数据正在整批替换）先不发，等它跑完再发。发送过程中每发一个人就记一次进度；
+服务重启时没发完的那一轮记成「已中断」。
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -298,12 +302,18 @@ class UsageReports:
         return sorted(oid for oid in people if self.directory.user(oid))
 
     def push(self, kind: str, trigger: str, actor: str = "system", only: list[str] | None = None, now: date | None = None) -> dict:
-        """发一期报表。only 给了就只发给这些人（测试发送）；否则按发送范围发。返回这一轮的记录。"""
-        with self._lock:
+        """发一期报表。only 给了就只发给这些人（测试发送）；否则按发送范围发。返回这一轮的记录。
+
+        全量发送（定时或手动）一轮一轮排队发，开始时记下发的是哪一期（last_period），定时任务就不会再发这一期；
+        测试发送只发一个人，不排队，也不记。"""
+        full = only is None
+        with self._lock if full else contextlib.nullcontext():
             period = self.period(kind, now)
+            if full:
+                self.config.mark(f"report_{kind}", "last_period", period["start"])
             data = self.build(period)
             leaders = self.directory.leaders()
-            targets = list(only) if only is not None else self.targets(data, leaders)
+            targets = self.targets(data, leaders) if full else list(only)
             run_id = self.db.x(
                 "INSERT INTO report_runs(kind, week_start, week_end, trigger, actor, status, total, started_at) VALUES(?,?,?,?,?,'running',?,?)",
                 (kind, period["start"], period["end"], trigger, actor, len(targets), int(time.time())),
@@ -320,6 +330,8 @@ class UsageReports:
                     if len(errors) >= 5 and sent == 0:  # 一开始就连着失败：多半是没开机器人或没权限，别再一个个试了
                         errors.append("连续失败，已停止这一轮发送")
                         break
+                # 每发一个人记一次进度：页面上能看到发到哪儿了，中途重启也知道已经发了多少
+                self.db.x("UPDATE report_runs SET sent=?, failed=? WHERE id=?", (sent, i + 1 - sent, run_id))
                 if i + 1 < len(targets):
                     self.sleep(SEND_GAP)
             failed = len(targets) - sent
@@ -332,26 +344,49 @@ class UsageReports:
             return self._view(self.db.one("SELECT * FROM report_runs WHERE id=?", (run_id,)))
 
     # ---------- 定时 ----------
-    def due(self, kind: str, now: datetime) -> bool:
-        """到点了没有：开着、过了设定的整点、这一期还没发过；周报还要是设定的周几，月报是设定的几号之后（错过了当月补发）。
-        有同步任务在跑时先不发：数据正在整批替换，等它跑完。"""
+    def handled(self, kind: str, now: datetime) -> bool:
+        """现在这一期（日报 = 昨天，周报 = 上一周，月报 = 上个月）是不是已经全量发过、或者说好了不自动发。"""
+        cfg = self.config.get(f"report_{kind}")
+        if cfg["last_period"] == self.period(kind, now.date())["start"]:
+            return True
+        # 只有 last_push_date（定时任务记的发送日）的老记录：按发送日推这一期发过没有
+        last, today = cfg["last_push_date"], now.date()
+        if kind == "daily":
+            return last == today.isoformat()
+        if kind == "weekly":
+            return last >= (today - timedelta(days=today.weekday())).isoformat()
+        return last[:7] == today.isoformat()[:7]
+
+    def _open(self, kind: str, now: datetime) -> bool:
+        """到点了、这一期也还没发过：开着、过了设定的整点；周报还要是设定的周几，月报是设定的几号之后（错过了当月补发）。"""
         cfg = self.config.get(f"report_{kind}")
         if not cfg["enabled"] or now.hour < cfg["hour"]:
             return False
-        today, last = now.date().isoformat(), cfg["last_push_date"]
-        if kind == "daily":
-            fresh = last != today
-        elif kind == "weekly":
-            fresh = now.isoweekday() == cfg["weekday"] and last != today
-        else:
-            fresh = now.day >= cfg["day"] and last[:7] != today[:7]
-        return fresh and not (self.engine and self.engine.active())
+        if (kind == "weekly" and now.isoweekday() != cfg["weekday"]) or (kind == "monthly" and now.day < cfg["day"]):
+            return False
+        return not self.handled(kind, now)
+
+    def due(self, kind: str, now: datetime) -> bool:
+        """现在该定时发这种报表了吗。有同步任务在跑时先不发：数据正在整批替换，等它跑完。"""
+        return self._open(kind, now) and not (self.engine and self.engine.active())
+
+    def save(self, kind: str, patch: dict, actor: str, now: datetime | None = None) -> dict:
+        """保存一种报表的设置。保存本身不触发发送：比如 10 点才打开「每天 9 点」的日报，今天这一期不补发，明天 9 点开始发
+        （要发这一期就点「立即全量发送」）。返回保存后的设置，skipped = 这一期因此不会自动发。"""
+        now = now or datetime.now(CST)
+        before = self._open(kind, now)
+        saved = self.config.save(f"report_{kind}", patch, actor)
+        skipped = not before and self._open(kind, now)
+        if skipped:
+            self.config.mark(f"report_{kind}", "last_period", self.period(kind, now.date())["start"])
+        return {**saved, "skipped": skipped}
 
     def tick(self, now: datetime) -> list[str]:
         """调度每分钟调一次：到点的报表在后台线程里依次发（同一时刻到点的几种报表不会同时发）。"""
         kinds = [k for k in KINDS if self.due(k, now)]
         for k in kinds:  # 先记下来：发送很慢，中途重启也不要再发一轮
             self.config.mark(f"report_{k}", "last_push_date", now.date().isoformat())
+            self.config.mark(f"report_{k}", "last_period", self.period(k, now.date())["start"])
         if kinds:
             threading.Thread(target=self._push_all, args=(kinds, now.date()), name="usage-reports", daemon=True).start()
         return kinds
@@ -362,6 +397,16 @@ class UsageReports:
                 self.push(k, "schedule", now=day)
             except Exception:
                 log.exception("%s定时发送出错", KINDS[k])
+
+    def recover(self) -> int:
+        """服务启动时调：上次没发完就被重启打断的发送，记成「已中断」（后面的人没有发到，也不会自动续发）。"""
+        rows = self.db.q("SELECT id, total, sent, failed FROM report_runs WHERE status='running'")
+        for r in rows:
+            rest = r["total"] - r["sent"] - r["failed"]
+            note = f"服务重启，这一轮发送中断：已发 {r['sent']} 人，{rest} 人没有发到" if r["sent"] else "服务重启，这一轮发送中断，没有发完"
+            self.db.x("UPDATE report_runs SET status='interrupted', error=?, finished_at=? WHERE id=? AND status='running'", (note, int(time.time()), r["id"]))
+            log.warning("报表发送 #%s 被重启打断：%s", r["id"], note)
+        return len(rows)
 
     # ---------- 记录 ----------
     def _view(self, row) -> dict:

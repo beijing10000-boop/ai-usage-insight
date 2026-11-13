@@ -243,9 +243,9 @@ CREATE TABLE IF NOT EXISTS report_runs (
     week_end    TEXT NOT NULL,                 -- 这一期的最后一天
     trigger     TEXT NOT NULL,                 -- schedule | manual | test
     actor       TEXT NOT NULL DEFAULT '',
-    status      TEXT NOT NULL,                 -- running | success | partial | failed
+    status      TEXT NOT NULL,                 -- running | success | partial | failed | interrupted（服务重启打断）
     total       INTEGER NOT NULL DEFAULT 0,
-    sent        INTEGER NOT NULL DEFAULT 0,
+    sent        INTEGER NOT NULL DEFAULT 0,    -- 发送过程中每发一个人更新一次
     failed      INTEGER NOT NULL DEFAULT 0,
     error       TEXT NOT NULL DEFAULT '',
     started_at  INTEGER NOT NULL,

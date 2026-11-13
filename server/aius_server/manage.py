@@ -399,7 +399,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         if bad:
             return bad
         kinds = [
-            {"key": k, "name": name, "cfg": c.config.get(f"report_{k}"), "period": c.report.period(k)}
+            {"key": k, "name": name, "cfg": c.config.get(f"report_{k}"), "period": c.report.period(k), "handled": c.report.handled(k, datetime.now(CST))}
             for k, name in REPORT_KINDS.items()
         ]  # fmt: skip
         return c.page(
@@ -433,12 +433,13 @@ def register(app: FastAPI, c: Ctx) -> None:
             if kind == "monthly":
                 patch["day"] = day
             try:
-                saved = c.config.save(f"report_{kind}", patch, viewer.open_id)
+                saved = c.report.save(kind, patch, viewer.open_id)  # 保存不会立刻补发已经过了发送时间的这一期
             except ConfigError as e:
                 return oops(viewer, f"{name}设置没有保存", str(e), back, "reports")
             when = {"daily": "每天", "weekly": f"每{WEEKDAYS.get(saved.get('weekday', 1), '')}", "monthly": f"每月 {saved.get('day', 1)} 日"}[kind]
-            c.db.audit(viewer.open_id, "report", f"{name}：{'开启' if saved['enabled'] else '关闭'}，{when} {saved['hour']} 点")
-            return c.done(f"/reports#{kind}", "saved")
+            skip = "（已过这一期的发送时间，这一期不自动补发）" if saved["skipped"] else ""
+            c.db.audit(viewer.open_id, "report", f"{name}：{'开启' if saved['enabled'] else '关闭'}，{when} {saved['hour']} 点{skip}")
+            return c.done(f"/reports#{kind}", "report_saved_skip" if saved["skipped"] else "saved")
         if action == "test":
             run = c.report.push(kind, "test", viewer.open_id, only=[viewer.open_id])
             c.db.audit(viewer.open_id, "report", f"{name}测试发送给自己：{run['status']}")
