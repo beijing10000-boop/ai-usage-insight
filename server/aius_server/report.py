@@ -1,8 +1,8 @@
 """报表发送：日报、周报、月报，各自一个开关，用应用机器人给每个人发一张飞书卡片。
 
-- 每个人：这一期自己用了多少点、折算多少钱、和上一期比、用了几次、常用场景，以及这个月的基础额度用到了哪儿。
-- 部门负责人：再加上他负责的部门（含下级）这一期的用量、活跃人数、用量最多的人和主要场景（最多 MAX_DEPTS 个部门）。
-- 卡片最下面写「更多信息请查看」和平台的网址、一个「更多信息查看」按钮，最后一行是数据截止时间（按整天统计，到哪天 24:00）。
+- 每个人（个人用量）：这一期自己用了多少点、折算多少钱、用了几次、和上一期比、常用场景，以及截止到这一期最后一天基础额度用到了哪儿。
+- 部门负责人：再加上他负责的部门（含下级）这一期的用量、活跃人数、人均、用量最多的人和常用场景（最多 MAX_DEPTS 个部门）。
+- 卡片最下面是一个「点击查看更多信息」按钮（打开平台首页），最后一行是数据截止时间（按整天统计，到哪天 24:00）。
 - 用平台自己的飞书应用（机器人）发送。
 
 日报发昨天的，和上周同一天比（和前一天比会被周末带偏）；周报发上一个自然周；月报发上一个自然月。
@@ -16,7 +16,6 @@ import logging
 import threading
 import time
 from datetime import date, datetime, timedelta
-from urllib.parse import urlencode
 
 from .analytics import Analytics, Filter, month_name
 from .db import Database
@@ -65,6 +64,11 @@ def short(day: date) -> str:
 def scene(raw: str | None) -> str:
     """场景只留前两级：「豆包工作>任务模式>xxx」→「豆包工作>任务模式」。"""
     return ">".join((raw or UNKNOWN_SCENARIO).split(">")[:2])
+
+
+def scene_lines(scenes: list[tuple[str, float]], total: float) -> str:
+    """常用场景：① 场景 · 点数（占比），个人和部门一个样。"""
+    return "**常用场景**\n" + "\n".join(f"{RANKS[i]} {s} · {points(v)} 点（{v / total * 100:.0f}%）" for i, (s, v) in enumerate(scenes))
 
 
 def _md(content: str, **extra) -> dict:
@@ -121,12 +125,10 @@ class UsageReports:
             prev_label = "上个月"
         else:
             raise ValueError(f"没有这种报表：{kind}")
-        span = {"start": start.isoformat(), "end": end.isoformat()}
         return {
-            "kind": kind, "name": KINDS[kind], **span, "prev_start": prev_start.isoformat(), "prev_end": prev_end.isoformat(),
+            "kind": kind, "name": KINDS[kind], "start": start.isoformat(), "end": end.isoformat(),
+            "prev_start": prev_start.isoformat(), "prev_end": prev_end.isoformat(),
             "label": label, "title": title, "prev_label": prev_label,
-            # 点开网址时停在这一期：月报按自然月（还能和上个月比），其余按起止日期
-            "query": {"month": span["start"][:7]} if kind == "monthly" else span,
         }  # fmt: skip
 
     # ---------- 数据 ----------
@@ -203,60 +205,56 @@ class UsageReports:
         return out
 
     # ---------- 卡片 ----------
-    def link(self, path: str, **params) -> str:
-        return f"{self.public_url}{path}?{urlencode(params)}" if params else f"{self.public_url}{path}"
 
     def card(self, period: dict, open_id: str, me: dict, depts: list[dict], more_depts: int = 0) -> dict:
         price = self.config.point_price
         per = self.config.monthly_allowance
         name = self.directory.user_name(open_id) if self.directory.user(open_id) else ""
         kind, prev_label = period["kind"], period["prev_label"]
-        whose = "你和你负责的部门" if depts else "你"
+        whose = "您和您负责的部门" if depts else "您"
         end = date.fromisoformat(period["end"])
-        elements: list[dict] = [_md(f"Hi，**{name or '你好'}**\n这是{whose}在 **{period['label']}** 的{TITLE}{period['name']}。")]
+        intro = f"这是{whose}在 **{period['label']}** 的{TITLE}{period['name']}。"
+        elements: list[dict] = [_md(f"**{name}**，{intro}" if name else intro)]
 
-        # 我的用量
-        elements.append(_md("**👤 我的用量**"))
+        # 个人用量：点数、金额、次数（周报月报再加天数）都在一排指标里，下面是常用场景
+        elements.append(_md("**👤 个人用量**"))
         if me["amount"] > 0:
-            elements.append(_stats([("消耗点数", points(me["amount"])), ("消耗金额", money(me["amount"] * price)), (f"比{prev_label}", delta(me["amount"], me["prev"]))]))
-            facts = [f"使用 {me['records']:,} 次"] + ([f"有用量的天数 {me['days']} 天"] if kind != "daily" else [])
-            lines = ["　·　".join(facts)]
+            stats = [("消耗点数", points(me["amount"])), ("消耗金额", money(me["amount"] * price)), ("使用次数", f"{me['records']:,}")]
+            if kind != "daily":
+                stats.append(("使用天数", str(me["days"])))
+            elements.append(_stats([*stats, (f"比{prev_label}", delta(me["amount"], me["prev"]))]))
             if me["scenes"]:
-                lines.append("**常用场景**\n" + "\n".join(f"{RANKS[i]} {s} · {points(v)} 点（{v / me['amount'] * 100:.0f}%）" for i, (s, v) in enumerate(me["scenes"])))
-            elements.append(_md("\n\n".join(lines)))
+                elements.append(_md(scene_lines(me["scenes"], me["amount"])))
         else:
             elements.append(_md(f"🌙 {period['label']}没有 AI 用量记录"))
         if per:
             used = me["month_used"]
-            month = month_name(period["end"][:7]) + ("" if kind == "monthly" else f"（截至 {short(date.fromisoformat(period['end']))}）")
             state = f"剩余 {points(per - used)} 点" if used < per else f"已用完，超出 {points(used - per)} 点（来自追加的额度）"
-            elements.append(_md(f"📊 {month}基础额度：已用 **{points(used)} / {points(per)} 点**（{used / per * 100:.0f}%），{state}"))
+            elements.append(_md(f"📊 截止到 {short(end)} 基础额度：已用 **{points(used)} / {points(per)} 点**（{used / per * 100:.0f}%），{state}"))
 
-        # 负责的部门
+        # 负责的部门：点数、金额、活跃人数、人均都在一排指标里，下面是用量最多的人和常用场景
         for d in depts:
             elements.append({"tag": "hr"})
             elements.append(_md(f"**🏢 {d['name']} · 部门用量**　<font color='grey'>含下级部门</font>"))
             if d["amount"] > 0:
-                elements.append(_stats([("部门点数", points(d["amount"])), ("部门金额", money(d["amount"] * price)), (f"比{prev_label}", delta(d["amount"], d["prev"]))]))
                 per_capita = d["amount"] / d["active"] if d["active"] else 0.0
-                lines = [f"活跃 **{d['active']}** / {d['headcount'] or '—'} 人　·　人均 {points(per_capita)} 点"]
-                lines.append("**用量最多的人**\n" + "\n".join(f"{RANKS[i]} {self.directory.user_name(oid)} · {points(v)} 点" for i, (oid, v) in enumerate(d["top"])))
+                active = f"{d['active']} / {d['headcount']}" if d["headcount"] else str(d["active"])
+                elements.append(_stats([("部门点数", points(d["amount"])), ("部门金额", money(d["amount"] * price)), ("活跃人数", active),
+                                        ("人均点数", points(per_capita)), (f"比{prev_label}", delta(d["amount"], d["prev"]))]))  # fmt: skip
+                lines = ["**用量最多的人**\n" + "\n".join(f"{RANKS[i]} {self.directory.user_name(oid)} · {points(v)} 点" for i, (oid, v) in enumerate(d["top"]))]
                 if d["scenes"]:
-                    lines.append("**主要场景**\n" + "\n".join(f"· {s} · {points(v)} 点" for s, v in d["scenes"]))
+                    lines.append(scene_lines(d["scenes"], d["amount"]))
                 elements.append(_md("\n\n".join(lines)))
             else:
                 elements.append(_md(f"🌙 {period['label']}部门里没有 AI 用量记录"))
-            url = self.link("/dept-ops", dept=d["id"], **period["query"])
-            elements.append(_md(f"部门详情请查看：[部门运营 · {d['name']}]({url})"))
         if more_depts:
-            elements.append(_md(f"你还负责 {more_depts} 个部门，在「部门运营」里切换部门查看。"))
+            elements.append(_md(f"您还负责 {more_depts} 个部门，在「部门运营」里切换部门查看。"))
 
-        # 最下面：平台网址 + 一个「更多信息查看」按钮 + 数据截止时间。报表按整天统计（日报是昨天全天），不是发卡片那一刻的实时数据
+        # 最下面：一个「点击查看更多信息」按钮（打开平台首页）+ 数据截止时间。报表按整天统计（日报是昨天全天），不是发卡片那一刻的实时数据
         elements.append({"tag": "hr"})
-        elements.append(_md(f"**更多信息请查看：**[{self.public_url}]({self.public_url})"))
-        button = {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "更多信息查看"}, "url": self.public_url}
+        button = {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "点击查看更多信息"}, "url": self.public_url}
         elements.append({"tag": "action", "actions": [button]})
-        note = f"数据截止时间：{end.year} 年 {end.month} 月 {end.day} 日 24:00（按整天统计）· 按 {price:g} 元/点折算 · 在公司网络里用飞书登录后查看"
+        note = f"数据截止时间：{end.year} 年 {end.month} 月 {end.day} 日 24:00（按整天统计）· 按 {price:g} 元/点折算"
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
         return {
             "config": {"wide_screen_mode": True},

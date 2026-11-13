@@ -7,7 +7,7 @@ import time
 from datetime import date, datetime, timedelta
 
 from aius_server.feishu import CST, FeishuError
-from aius_server.report import delta, points
+from aius_server.report import WEEKDAYS, delta, points
 from aius_server.sync import today
 from conftest import D1
 
@@ -17,20 +17,30 @@ def text_of(card: dict) -> str:
     return json.dumps(card, ensure_ascii=False).replace("\\n", "\n")
 
 
+def stat_row(element: dict) -> list[tuple[str, str]]:
+    """一排指标（column_set）→ [(说明, 数值)]。"""
+    assert element["tag"] == "column_set"
+    out = []
+    for col in element["columns"]:
+        value, label = col["elements"][0]["content"].split("\n")
+        out.append((label.removeprefix("<font color='grey'>").removesuffix("</font>"), value.strip("*")))
+    return out
+
+
 def test_periods():
     from aius_server.report import UsageReports
 
     r = UsageReports.__new__(UsageReports)  # 周期只和日期有关
     d = r.period("daily", date(2026, 11, 11))  # 周三发周二的
     assert (d["start"], d["end"], d["prev_start"], d["prev_end"]) == ("2026-11-10", "2026-11-10", "2026-11-03", "2026-11-03")
-    assert d["label"] == "11 月 10 日（周二）" and d["title"] == "11/10 周二" and d["prev_label"] == "上周同日" and d["query"] == {"start": "2026-11-10", "end": "2026-11-10"}
+    assert d["label"] == "11 月 10 日（周二）" and d["title"] == "11/10 周二" and d["prev_label"] == "上周同日"
     w = r.period("weekly", date(2026, 11, 11))
     assert (w["start"], w["end"], w["prev_start"], w["prev_end"]) == ("2026-11-02", "2026-11-08", "2026-10-26", "2026-11-01")
     assert w["title"] == "11/02 - 11/08" and w["prev_label"] == "上一周"
     assert r.period("weekly", date(2026, 11, 9))["start"] == "2026-11-02"  # 周一发的也是上一周
     m = r.period("monthly", date(2026, 11, 1))
     assert (m["start"], m["end"], m["prev_start"], m["prev_end"]) == ("2026-10-01", "2026-10-31", "2026-09-01", "2026-09-30")
-    assert m["label"] == "2026 年 10 月" and m["query"] == {"month": "2026-10"}
+    assert m["label"] == "2026 年 10 月"
     assert r.period("monthly", date(2027, 1, 5))["start"] == "2026-12-01"  # 跨年
 
 
@@ -53,17 +63,25 @@ def test_personal_and_department_cards(env):
     card = report.card(period, "ou_bob", me, [rd])
     text = text_of(card)
     assert card["header"]["title"]["content"].startswith("飞书/豆包 AI 用量日报 ｜ ") and card["header"]["template"] == "blue"
-    assert "Hi，**鲍勃**" in text and "你和你负责的部门" in text and "的飞书/豆包 AI 用量日报" in text
     d1 = date.fromisoformat(D1)
-    assert "**30**" in text and "¥1.50" in text and "比上周同日" in text  # 上周同日没有数据：—
-    assert "研发部 · 部门用量" in text and "**31**" in text and "活跃 **2** / 2 人" in text and "① 鲍勃 · 30 点" in text
+    # 开头不带 Hi，称呼用「您」；个人部分叫「个人用量」
+    assert card["elements"][0]["content"] == f"**鲍勃**，这是您和您负责的部门在 **{d1.month} 月 {d1.day} 日（{WEEKDAYS[d1.isoweekday()]}）** 的飞书/豆包 AI 用量日报。"
+    assert "Hi" not in text and "你" not in text and "**👤 个人用量**" in text and "我的用量" not in text
+    # 个人一排指标：点数、金额、使用次数、比上周同日（日报没有天数）
+    mine = card["elements"][2]
+    assert stat_row(mine) == [("消耗点数", "30"), ("消耗金额", "¥1.50"), ("使用次数", "2"), ("比上周同日", "—")]  # 上周同日没有数据：—
+    # 部门一排指标：点数、金额、活跃人数、人均、比上周同日；下面是排名和常用场景（带编号）
+    dept = next(e for e in card["elements"] if e["tag"] == "column_set" and e is not mine)
+    assert stat_row(dept) == [("部门点数", "31"), ("部门金额", "¥1.55"), ("活跃人数", "2 / 2"), ("人均点数", "15.5"), ("比上周同日", "—")]
+    assert "研发部 · 部门用量" in text and "① 鲍勃 · 30 点" in text and "活跃 **" not in text and "人均 " not in text
+    assert "主要场景" not in text and text.count("**常用场景**\n① ") == 2  # 个人和部门一样：常用场景 + ①②③
     assert "🥇" not in text  # 排名用圈数字，不用奖牌
-    dept_url = f"http://testserver/dept-ops?dept=d-rd&start={D1}&end={D1}"
-    assert "**更多信息请查看：**[http://testserver](http://testserver)" in text and f"部门详情请查看：[部门运营 · 研发部]({dept_url})" in text
-    # 最下面只有一个「更多信息查看」按钮，最后一行是数据截止时间（日报是昨天全天，不是发送那一刻的数据）
-    assert [(b["text"]["content"], b["url"]) for b in card["elements"][-2]["actions"]] == [("更多信息查看", "http://testserver")]
+    # 不再有「部门详情请查看」「更多信息请查看」两行，也不写「在公司网络里用飞书登录后查看」
+    assert "详情请查看" not in text and "更多信息请查看" not in text and "登录后查看" not in text
+    # 最下面只有一个「点击查看更多信息」按钮，最后一行是数据截止时间（日报是昨天全天，不是发送那一刻的数据）
+    assert [(b["text"]["content"], b["url"]) for b in card["elements"][-2]["actions"]] == [("点击查看更多信息", "http://testserver")]
     note = card["elements"][-1]
-    assert note["tag"] == "note" and note["elements"][0]["content"].startswith(f"数据截止时间：{d1.year} 年 {d1.month} 月 {d1.day} 日 24:00（按整天统计）")
+    assert note["tag"] == "note" and note["elements"][0]["content"] == f"数据截止时间：{d1.year} 年 {d1.month} 月 {d1.day} 日 24:00（按整天统计）· 按 0.05 元/点折算"
     # 技术中心的负责人爱丽丝自己没用过，部门（含研发部、运维部）有：鲍勃 30 + 戴维 1 + 艾琳 5
     tech = report.department(data, "d-tech")
     assert tech["amount"] == 36 and tech["active"] == 3
@@ -71,7 +89,10 @@ def test_personal_and_department_cards(env):
     assert "没有 AI 用量记录" in alice and "技术中心 · 部门用量" in alice and "**36**" in alice
     # 普通人：没有部门部分，同样只有一个按钮
     dave = report.card(period, "ou_dave", report.personal(data, "ou_dave"), [])
-    assert "部门用量" not in text_of(dave) and "Hi，**戴维**\n这是你在" in text_of(dave) and len(dave["elements"][-2]["actions"]) == 1
+    assert "部门用量" not in text_of(dave) and dave["elements"][0]["content"].startswith("**戴维**，这是您在 ") and len(dave["elements"][-2]["actions"]) == 1
+    # 周报：个人那排多一列「使用天数」
+    weekly = report.card(report.period("weekly"), "ou_bob", {**me, "days": 1}, [])
+    assert stat_row(weekly["elements"][2]) == [("消耗点数", "30"), ("消耗金额", "¥1.50"), ("使用次数", "2"), ("使用天数", "1"), ("比上一周", "—")]
 
 
 def test_monthly_allowance_line(env):
@@ -81,7 +102,8 @@ def test_monthly_allowance_line(env):
     data = report.build(period)
     text = text_of(report.card(period, "ou_bob", report.personal(data, "ou_bob"), []))
     used = data["month_used"]["ou_bob"]  # 这个月 1 日到昨天
-    assert "基础额度：已用" in text and "/ 20 点" in text and ("已用完" in text if used >= 20 else "剩余" in text)
+    end = date.fromisoformat(period["end"])
+    assert f"📊 截止到 {end.month:02d}/{end.day:02d} 基础额度：已用 **" in text and "/ 20 点" in text and ("已用完" in text if used >= 20 else "剩余" in text)
 
 
 def test_push_scope_and_test_send(env):
