@@ -2,7 +2,8 @@
 
 - 每个人：这一期自己用了多少点、折算多少钱、和上一期比、用了几次、常用场景，以及这个月的基础额度用到了哪儿。
 - 部门负责人：再加上他负责的部门（含下级）这一期的用量、活跃人数、用量最多的人和主要场景（最多 MAX_DEPTS 个部门）。
-- 卡片最下面写「详情请查看」和平台的网址，再给一个按钮。
+- 卡片最下面写「更多信息请查看」和平台的网址、一个「更多信息查看」按钮，最后一行是数据截止时间（按整天统计，到哪天 24:00）。
+- 用平台自己的飞书应用（机器人）发送。
 
 日报发昨天的，和上周同一天比（和前一天比会被周末带偏）；周报发上一个自然周；月报发上一个自然月。
 发送用应用机器人（应用要开机器人能力和 im:message:send_as_bot 权限）。每种报表一期只自动发一次；
@@ -29,7 +30,8 @@ log = logging.getLogger("aius")
 KINDS = {"daily": "日报", "weekly": "周报", "monthly": "月报"}
 COLORS = {"daily": "blue", "weekly": "violet", "monthly": "indigo"}  # 卡片标题栏的颜色
 WEEKDAYS = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
-RANKS = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+RANKS = ["①", "②", "③", "④", "⑤"]
+TITLE = "飞书/豆包 AI 用量"  # 卡片标题和开头的叫法
 SEND_GAP = 0.2  # 发消息接口限频，留出余量
 MAX_DEPTS = 3  # 一张卡片里最多放几个部门；负责更多部门的，其余的在「部门运营」里看
 TOP_PEOPLE = 5
@@ -210,7 +212,8 @@ class UsageReports:
         name = self.directory.user_name(open_id) if self.directory.user(open_id) else ""
         kind, prev_label = period["kind"], period["prev_label"]
         whose = "你和你负责的部门" if depts else "你"
-        elements: list[dict] = [_md(f"Hi，**{name or '你好'}**\n这是{whose}在 **{period['label']}** 的 AI 用量{period['name']}。")]
+        end = date.fromisoformat(period["end"])
+        elements: list[dict] = [_md(f"Hi，**{name or '你好'}**\n这是{whose}在 **{period['label']}** 的{TITLE}{period['name']}。")]
 
         # 我的用量
         elements.append(_md("**👤 我的用量**"))
@@ -244,23 +247,20 @@ class UsageReports:
             else:
                 elements.append(_md(f"🌙 {period['label']}部门里没有 AI 用量记录"))
             url = self.link("/dept-ops", dept=d["id"], **period["query"])
-            elements.append(_md(f"部门详情请查看：[{url}]({url})"))
+            elements.append(_md(f"部门详情请查看：[部门运营 · {d['name']}]({url})"))
         if more_depts:
             elements.append(_md(f"你还负责 {more_depts} 个部门，在「部门运营」里切换部门查看。"))
 
-        # 详情请查看 + 网址
-        url = self.link("/self-usage", **period["query"])
+        # 最下面：平台网址 + 一个「更多信息查看」按钮 + 数据截止时间。报表按整天统计（日报是昨天全天），不是发卡片那一刻的实时数据
         elements.append({"tag": "hr"})
-        elements.append(_md(f"**详情请查看：**[{url}]({url})"))
-        buttons = [{"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "查看我的用量"}, "url": url}]
-        if depts:
-            dept_url = self.link("/dept-ops", dept=depts[0]["id"], **period["query"])
-            buttons.append({"tag": "button", "type": "default", "text": {"tag": "plain_text", "content": "查看部门运营"}, "url": dept_url})
-        elements.append({"tag": "action", "actions": buttons})
-        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": f"AI 运营洞察平台 · 按 {price:g} 元/点折算 · 在公司网络里用飞书登录后查看"}]})
+        elements.append(_md(f"**更多信息请查看：**[{self.public_url}]({self.public_url})"))
+        button = {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "更多信息查看"}, "url": self.public_url}
+        elements.append({"tag": "action", "actions": [button]})
+        note = f"数据截止时间：{end.year} 年 {end.month} 月 {end.day} 日 24:00（按整天统计）· 按 {price:g} 元/点折算 · 在公司网络里用飞书登录后查看"
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
         return {
             "config": {"wide_screen_mode": True},
-            "header": {"template": COLORS[kind], "title": {"tag": "plain_text", "content": f"AI 用量{period['name']} ｜ {period['title']}"}},
+            "header": {"template": COLORS[kind], "title": {"tag": "plain_text", "content": f"{TITLE}{period['name']} ｜ {period['title']}"}},
             "elements": elements,
         }
 

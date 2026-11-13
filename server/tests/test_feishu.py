@@ -122,7 +122,7 @@ def test_usage_calls_are_spaced_out_for_the_one_per_second_limit():
     fs, slept = client(lambda r: httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}}))
     fs.usage_page("log", "member", "2026-05-15")
     fs.usage_page("log", "app", "2026-05-15")
-    assert len(slept) == 1 and 0 < slept[0] <= 1.05  # 两次请求「开始」之间隔够 1.05 秒
+    assert len(slept) == 1 and 0 < slept[0] <= 1.05 + 1e-6  # 两次请求「开始」之间隔够 1.05 秒（留浮点误差：开机久了 monotonic 精度会变差）
 
 
 def test_rate_limit_is_retried_with_backoff():
