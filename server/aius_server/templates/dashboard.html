@@ -130,7 +130,7 @@
         <tbody>
           {% for a in o.apps %}
           <tr>
-            <td><span class="cell-title">{{ a.name }}</span><small>{{ a.type }}{% if not a.named %} · 还没有名称，显示的是应用 ID{% endif %}</small></td>
+            <td><span class="cell-title">{{ a.name }}</span><small>{{ a.type }}{% if a.owner %} · 所有者 {{ a.owner }}{% endif %}{% if not a.named %} · 还没有名称，显示的是应用 ID{% endif %}</small></td>
             <td class="num">{{ a.amount|num }}</td>
             <td class="num">{{ (a.amount * k.point_price)|money }}</td>
             <td>{{ bar(a.share) }}<small>{{ a.share|num(1) }}%</small></td>

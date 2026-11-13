@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # 从 usage_logs 生成 usage_agg 的那条语句；{where} 是要汇总的范围（同步时是刚写入的那个「日期 × 主体」）
 AGG_INSERT = (
@@ -201,6 +201,13 @@ CREATE TABLE IF NOT EXISTS app_mapping (
     source     TEXT NOT NULL,
     updated_by TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
+);
+-- 应用的所有者（v6）：Aily 应用统计里带的 owner，同步结束补查名称时一起记下。和名称分开存：手工改了名称，所有者照样更新
+CREATE TABLE IF NOT EXISTS app_owners (
+    app_id      TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,                 -- 所有者姓名
+    created     TEXT NOT NULL DEFAULT '',      -- 应用创建时间（Aily 给的 YYYY-MM-DD HH:MM:SS）
+    updated_at  INTEGER NOT NULL
 );
 -- 额度分配：给部门 / 人员 / 应用在一个周期里分配的点数
 CREATE TABLE IF NOT EXISTS quota_allocations (

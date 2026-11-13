@@ -395,6 +395,7 @@ class Analytics:
         # 名称来自映射表：手工 / Aily / 开放平台，以及同步时接口自己带的名称（_resolve_names 存进映射表）。
         # 不去翻原始日志——那张表一天几万行，按应用分组要扫整段日期
         names = self.app_names()
+        owners = {r["app_id"]: r["owner"] for r in self.db.q("SELECT app_id, owner FROM app_owners")}
         ranked = sorted(cur.by_app.items(), key=lambda kv: -kv[1]["amount"])
         picked = ranked[:limit] if limit else ranked
         ids = [app_id for app_id, _a in picked]
@@ -416,6 +417,7 @@ class Analytics:
                     "name": name or app_id,
                     "named": bool(name),
                     "type": labels.entity_type(types.get(app_id)),
+                    "owner": owners.get(app_id, ""),
                     "amount": r2(a["amount"]),
                     "share": pct(a["amount"], cur.app_total),
                     "records": a["records"],

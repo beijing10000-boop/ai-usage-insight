@@ -324,9 +324,13 @@ class FeishuClient:
         return {k: v for k, v in out.items() if k in set(app_ids)}
 
     def aily_app_names(self, since: int | None = None, want: set[str] | frozenset[str] = frozenset()) -> dict[str, str]:
-        """Aily 应用和智能体的 ID → 名称（要配置 Aily 应用凭证，权限 aily:stats:read）。
+        """Aily 应用和智能体的 ID → 名称。参数同 aily_app_info。"""
+        return {k: v["name"] for k, v in self.aily_app_info(since, want).items()}
 
-        应用统计只列出那段时间里有人用过的应用，一次查 AILY_WINDOW_DAYS 天。先查最近这段，名称全收（改过名的也跟着更新）；
+    def aily_app_info(self, since: int | None = None, want: set[str] | frozenset[str] = frozenset()) -> dict[str, dict]:
+        """Aily 应用和智能体的 ID → {name 名称, owner 所有者姓名, created 创建时间}（要配置 Aily 应用凭证，权限 aily:stats:read）。
+
+        应用统计只列出那段时间里有人用过的应用，一次查 AILY_WINDOW_DAYS 天。先查最近这段，全收（改过名的也跟着更新）；
         want 里还有没查到的（很久以前用过、最近没人用的智能体），再往前一段一段地查，直到 since（那些应用最早被用的时间）
         或者都查到为止，最多 AILY_MAX_WINDOWS 段。往前查到的只收 want 里的。"""
         aily_id, aily_secret = self.vault.aily()
@@ -334,7 +338,7 @@ class FeishuClient:
             return {}
         token = self._token(aily_id, aily_secret)
         end = int(time.time())
-        out: dict[str, str] = {}
+        out: dict[str, dict] = {}
         for window in range(AILY_MAX_WINDOWS):
             start = end - AILY_WINDOW_DAYS * 86400
             for kind in ("app", "agent"):
@@ -343,7 +347,8 @@ class FeishuClient:
                     data = self._api("GET", "/open-apis/aily/v1/app_stats", "获取 Aily 应用统计", params=params, token=token)
                     for it in data.get("items") or []:
                         if it.get("id") and it.get("name") and (window == 0 or (it["id"] in want and it["id"] not in out)):
-                            out[it["id"]] = it["name"]
+                            owner = it.get("owner") if isinstance(it.get("owner"), dict) else {}
+                            out[it["id"]] = {"name": it["name"], "owner": str(owner.get("name") or ""), "created": str(it.get("appCreatedAt") or "")}
                     if not data.get("has_more") or not data.get("page_token"):
                         break
                     params["page_token"] = data["page_token"]
@@ -517,6 +522,7 @@ class FakeFeishu:
         self.usage = usage or {}
         self.apps = app_names if app_names is not None else ({a[1]: a[2] for a in DEMO_APPS if a[0] == 5} if demo else {})
         self.aily_apps: dict[str, str] = {a[1]: a[2] for a in DEMO_APPS if a[0] in (6, 8)} if demo else {}
+        self.aily_owners: dict[str, str] = {k: DEMO_PEOPLE[i % len(DEMO_PEOPLE)][0] for i, k in enumerate(self.aily_apps)} if demo else {}
         self.page_size = 100
         self.fail: dict[tuple[str, str], FeishuError] = {}  # (kind, subject) -> 调用时抛出的错误（测试用）
         self.calls: list[tuple] = []
@@ -574,8 +580,11 @@ class FakeFeishu:
         return {i: self.apps[i] for i in app_ids if i in self.apps}
 
     def aily_app_names(self, since: int | None = None, want: set[str] | frozenset[str] = frozenset()) -> dict[str, str]:
-        self.calls.append(("aily_app_names", since, frozenset(want)))
-        return dict(self.aily_apps)
+        return {k: v["name"] for k, v in self.aily_app_info(since, want).items()}
+
+    def aily_app_info(self, since: int | None = None, want: set[str] | frozenset[str] = frozenset()) -> dict[str, dict]:
+        self.calls.append(("aily_app_info", since, frozenset(want)))
+        return {k: {"name": v, "owner": self.aily_owners.get(k, ""), "created": ""} for k, v in self.aily_apps.items()}
 
     # ---- AI 用量 ----
     def usage_page(
