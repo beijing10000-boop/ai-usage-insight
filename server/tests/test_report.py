@@ -52,15 +52,18 @@ def test_personal_and_department_cards(env):
     assert (rd["amount"], rd["active"], rd["headcount"], rd["top"][0]) == (31, 2, 2, ("ou_bob", 30))
     card = report.card(period, "ou_bob", me, [rd])
     text = text_of(card)
-    assert card["header"]["title"]["content"].startswith("AI 用量日报 ｜ ") and card["header"]["template"] == "blue"
-    assert "Hi，**鲍勃**" in text and "你和你负责的部门" in text
+    assert card["header"]["title"]["content"].startswith("飞书/豆包 AI 用量日报 ｜ ") and card["header"]["template"] == "blue"
+    assert "Hi，**鲍勃**" in text and "你和你负责的部门" in text and "的飞书/豆包 AI 用量日报" in text
+    d1 = date.fromisoformat(D1)
+    assert f"数据按整天统计，截至 **{d1.month} 月 {d1.day} 日 24:00**" in text  # 日报是昨天全天，不是发送那一刻的数据
     assert "**30**" in text and "¥1.50" in text and "比上周同日" in text  # 上周同日没有数据：—
-    assert "研发部 · 部门用量" in text and "**31**" in text and "活跃 **2** / 2 人" in text and "🥇 鲍勃 · 30 点" in text
+    assert "研发部 · 部门用量" in text and "**31**" in text and "活跃 **2** / 2 人" in text and "① 鲍勃 · 30 点" in text
+    assert "🥇" not in text  # 排名用圈数字，不用奖牌
     self_url = f"http://testserver/self-usage?start={D1}&end={D1}"
     dept_url = f"http://testserver/dept-ops?dept=d-rd&start={D1}&end={D1}"
-    assert f"**详情请查看：**[{self_url}]({self_url})" in text and f"部门详情请查看：[{dept_url}]({dept_url})" in text
+    assert "**更多信息请查看：**[http://testserver](http://testserver)" in text and f"部门详情请查看：[部门运营 · 研发部]({dept_url})" in text
     assert [b["url"] for b in card["elements"][-2]["actions"]] == [self_url, dept_url]
-    assert card["elements"][-1]["tag"] == "note"
+    assert card["elements"][-1]["tag"] == "note" and f"数据截至 {D1} 24:00（按整天统计）" in card["elements"][-1]["elements"][0]["content"]
     # 技术中心的负责人爱丽丝自己没用过，部门（含研发部、运维部）有：鲍勃 30 + 戴维 1 + 艾琳 5
     tech = report.department(data, "d-tech")
     assert tech["amount"] == 36 and tech["active"] == 3
