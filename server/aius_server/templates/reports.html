@@ -89,7 +89,8 @@
 <section class="panel" id="alerts">
   <div class="section-head">
     <div><h2>额度告警</h2><p>每个人这个月的用量到了每人每月基础额度{% if allowance %}（{{ allowance|num }} 点）{% endif %}的下面这些档位时，给他本人发一张飞书卡片提醒。
-      每个档位每月只提醒一次；一下跨过好几个档位只发最高的那个。超过 100% 的档位，卡片上把基础额度和追加额度（{{ alert.extra|num }} 点）一起列出来。
+      每个档位每月只提醒一次；一下跨过好几个档位只发最高的那个。这个月用量超过 {{ acfg.topped_at|num }} 点的就当作已经追加过额度（追加 {{ acfg.extra|num }} 点），
+      卡片上把追加额度也列出来，已用比例和剩余 / 超出按「基础 + 追加」合计算（周报、月报的额度那一排也一样）。
       只在 {{ alert.hours[0] }}:00–{{ alert.hours[1] }}:00 之间发，每 {{ alert.minutes }} 分钟看一次（当天的用量靠当天增量同步，每 10 分钟更新）。</p></div>
     <span class="status {{ 'ok' if acfg.enabled else 'muted' }}">{{ "已开启" if acfg.enabled else "已关闭" }}</span>
   </div>
@@ -114,8 +115,8 @@
         <input id="alert-extra" name="extra" value="{{ acfg.extra|num }}" inputmode="decimal" maxlength="12" />
       </div>
       <div>
-        <label for="alert-guide">额度申请说明的链接（可不填）</label>
-        <input id="alert-guide" name="guide_url" value="{{ acfg.guide_url }}" type="url" maxlength="500" placeholder="https://" />
+        <label for="alert-topped">用量超过多少点算已追加（点，默认 3000）</label>
+        <input id="alert-topped" name="topped_at" value="{{ acfg.topped_at|num }}" inputmode="decimal" maxlength="12" />
       </div>
     </div>
     <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>

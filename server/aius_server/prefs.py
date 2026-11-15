@@ -24,9 +24,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "report_daily": {"enabled": False, "hour": 9, "last_push_date": "", "last_period": ""},
     "report_weekly": {"enabled": False, "weekday": 1, "hour": 9, "last_push_date": "", "last_period": ""},
     "report_monthly": {"enabled": False, "day": 1, "hour": 9, "last_push_date": "", "last_period": ""},
-    # 额度告警：这个月的个人用量到了每人每月基础额度的这些百分比时提醒本人；guide_url = 卡片上「额度申请说明」的链接（可不填）；
-    # extra = 每次追加的额度（点），超过 100% 的档位卡片上和基础额度一起列出来
-    "quota_alert": {"enabled": False, "thresholds": [80, 100, 180, 200], "guide_url": "", "extra": 2000},
+    # 额度告警：这个月的个人用量到了每人每月基础额度的这些百分比时提醒本人。
+    # extra = 每次追加的额度（点）；topped_at = 这个月用量超过多少点就当作已经追加过：额度那一排（额度提醒、周报、月报）把基础额度和追加额度分开列
+    "quota_alert": {"enabled": False, "thresholds": [80, 100, 180, 200], "extra": 2000, "topped_at": 3000},
 }
 
 
@@ -103,20 +103,17 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
             if not values or len(values) > 8 or values[0] < 1 or values[-1] > 1000:
                 raise ConfigError("告警档位要在 1 到 1000（%）之间，至少 1 个、最多 8 个")
             out["thresholds"] = values
-        if "guide_url" in patch:
-            url = str(patch["guide_url"] or "").strip()
-            if url and not url.startswith(("http://", "https://")):
-                raise ConfigError("额度申请说明的链接要以 http:// 或 https:// 开头，不需要就留空")
-            out["guide_url"] = url[:500]
-        if "extra" in patch:
-            raw = str(patch["extra"] or "").strip()
-            try:
-                extra = float(raw) if raw else float(DEFAULTS["quota_alert"]["extra"])  # 留空 = 默认的 2000 点
-            except ValueError:
-                raise ConfigError("追加额度要填数字（点），留空就是默认的 2000 点") from None
-            if not 0 <= extra <= 1e9:
-                raise ConfigError("追加额度不能是负数")
-            out["extra"] = round(extra, 2)
+        for field, what in (("extra", "追加额度"), ("topped_at", "算作已追加的用量")):
+            if field in patch:
+                raw = str(patch[field] or "").strip()
+                default = DEFAULTS["quota_alert"][field]
+                try:
+                    value = float(raw) if raw else float(default)  # 留空 = 默认值
+                except ValueError:
+                    raise ConfigError(f"{what}要填数字（点），留空就是默认的 {default} 点") from None
+                if not 0 <= value <= 1e9:
+                    raise ConfigError(f"{what}不能是负数")
+                out[field] = round(value, 2)
     else:
         raise ConfigError("没有这个配置项")
     return out

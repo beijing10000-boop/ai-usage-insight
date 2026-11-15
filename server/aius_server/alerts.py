@@ -1,5 +1,7 @@
 """额度告警：每个人这个月的用量到了每人每月基础额度的 80%、100%、180%、200%（档位可以改）时，用应用机器人给他本人发一张飞书卡片提醒。
 
+- 卡片上的额度那一排和周报、月报一样（report.allowance_stats）：用量超过 3000 点（可改）就当作已经追加过额度，
+  列出追加额度，已用比例按「基础 + 追加」合计算。
 - 看的是这个月 1 日到现在的个人用量（当天的靠当天增量同步，每 10 分钟更新），和「额度分配」里的每人每月基础额度比。
 - 每个人每个月每个档位只提醒一次；两次检查之间一下跨过好几个档位（比如从 75% 涨到 105%），只发最高的那个，低的记成「已覆盖」。
 - 打开开关、改档位时，已经超过的档位不补发，只提醒之后新跨过的（记成「开启前已超过」）；需要的话可以在页面上给这些人补发一次。
@@ -19,7 +21,7 @@ from .db import Database
 from .directory import Directory
 from .feishu import CST, FeishuError
 from .prefs import Config
-from .report import SEND_GAP, TOP_SCENES, _md, _stats, points, scene, scene_lines
+from .report import SEND_GAP, TOP_SCENES, _md, allowance_stats, scene, scene_lines
 
 log = logging.getLogger("aius")
 
@@ -57,10 +59,6 @@ class QuotaAlerts:
 
     def thresholds(self) -> list[int]:
         return list(self.config.get("quota_alert")["thresholds"])
-
-    def extra(self) -> float:
-        """每次追加的额度（点），默认 2000（基础 2000 + 追加 2000 = 4000，正好是 200%）。"""
-        return float(self.config.get("quota_alert")["extra"])
 
     def crossed(self, used: float) -> list[int]:
         """用了这么多点，跨过了哪些档位（从低到高）。没设每人每月基础额度时一个都不算。"""
@@ -201,30 +199,13 @@ class QuotaAlerts:
     # ---------- 卡片 ----------
     def card(self, open_id: str, used: float, threshold: int, now: datetime) -> dict:
         per = self.config.monthly_allowance
-        guide = self.config.get("quota_alert")["guide_url"]
+        quota = self.config.get("quota_alert")
         month = self.month_of(now)
         name = self.directory.user_name(open_id) if self.directory.user(open_id) else ""
-        intro = f"您 **{month_name(month)}** 的飞书/豆包 AI 用量已经达到每月基础额度的 **{threshold}%**。"
+        intro = f"您 **{month_name(month)}** 的飞书/豆包 AI 用量已经达到基础额度的 **{threshold}%**。"
         elements: list[dict] = [_md(f"**{name}**，{intro}" if name else intro)]
-        ratio = ("已用比例", f"{used / per * 100:.0f}%" if per else "—")
-        if threshold <= 100:
-            # 80%、100% 这类档位：只和基础额度比
-            rest = ("剩余", points(per - used)) if used < per else ("超出", points(used - per))
-            elements.append(_stats([("本月已用", points(used)), ("基础额度", points(per)), ratio, rest]))
-            tip = f"本月基础额度还剩 {points(per - used)} 点，请合理安排使用。" if used < per else "本月基础额度已经用完，超出的部分来自追加的额度。"
-        else:
-            # 180%、200% 这类档位：基础额度用完了，再把追加额度也列出来，剩余 / 超出按两者合计算
-            extra = self.extra()
-            total = per + extra
-            rest = ("剩余", points(total - used)) if used < total else ("超出", points(used - total))
-            elements.append(_stats([("本月已用", points(used)), ("基础额度", points(per)), ("追加额度", points(extra)), ratio, rest]))
-            if used < total:
-                tip = f"本月基础额度已经用完，追加额度还剩 {points(total - used)} 点（基础 + 追加共 {points(total)} 点）。"
-            else:
-                tip = f"本月基础额度和追加额度（共 {points(total)} 点）都已经用完，超出 {points(used - total)} 点。"
-        if guide:
-            tip += f"如需追加额度，请查看：[额度申请说明]({guide})"
-        elements.append(_md(tip))
+        # 额度那一排：用量超过 topped_at（默认 3000 点）就当作已经追加过，列出追加额度，已用比例按基础 + 追加合计算
+        elements.append(allowance_stats(used, per, float(quota["extra"]), float(quota["topped_at"])))
         scenes: dict[str, float] = {}
         for r in self.db.q(
             "SELECT scenario, SUM(amount) FROM usage_agg WHERE subject='member' AND entity_id=? AND usage_date BETWEEN ? AND ? GROUP BY scenario",
@@ -237,7 +218,7 @@ class QuotaAlerts:
         elements.append({"tag": "hr"})
         button = {"tag": "button", "type": "primary", "text": {"tag": "plain_text", "content": "查看我的用量"}, "url": f"{self.public_url}/self-usage"}
         elements.append({"tag": "action", "actions": [button]})
-        note = f"统计时间：{now.month} 月 1 日 - {now.month} 月 {now.day} 日 {now:%H:%M}（当天的用量每 10 分钟更新一次）· 每个档位每月只提醒一次"
+        note = f"统计时间：{now.month} 月 1 日 - {now.month} 月 {now.day} 日 {now:%H:%M}（当天的用量每 10 分钟更新一次）"
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
         color = "orange" if threshold < 100 else "red" if threshold < 200 else "carmine"
         return {

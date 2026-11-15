@@ -409,7 +409,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         now = datetime.now(CST)
         alert = {
             "cfg": c.config.get("quota_alert"), "levels": c.alerts.levels(now), "records": c.alerts.records(), "waiting": len(c.alerts.waiting(now)),
-            "extra": c.alerts.extra(), "hours": ALERT_HOURS, "minutes": ALERT_MINUTES,
+            "hours": ALERT_HOURS, "minutes": ALERT_MINUTES,
         }  # fmt: skip
         return c.page(
             "reports.html", viewer, "reports", request, kinds=kinds, scope=c.config.get("report")["scope"], runs=c.report.runs(), weekdays=WEEKDAYS,
@@ -419,8 +419,8 @@ def register(app: FastAPI, c: Ctx) -> None:
     @app.post("/reports")
     def reports_post(
         request: Request, action: str = Form(...), kind: str = Form(""), enabled: str = Form(""), hour: str = Form(""),
-        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""), thresholds: str = Form(""), guide_url: str = Form(""),
-        extra: str = Form(""),
+        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""), thresholds: str = Form(""), extra: str = Form(""),
+        topped_at: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
@@ -428,7 +428,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         back = ("回到报表发送", "/reports")
         if action == "alert_save":
             try:
-                saved = c.alerts.save({"enabled": enabled == "1", "thresholds": thresholds, "guide_url": guide_url, "extra": extra}, viewer.open_id)
+                saved = c.alerts.save({"enabled": enabled == "1", "thresholds": thresholds, "extra": extra, "topped_at": topped_at}, viewer.open_id)
             except ConfigError as e:
                 return oops(viewer, "额度告警设置没有保存", str(e), back, "reports")
             levels = "、".join(f"{t}%" for t in saved["thresholds"])
