@@ -1,0 +1,46 @@
+{% extends "_base.html" %}
+{% set title = run.kind_name ~ "发送 #" ~ run.id %}
+{% set section = "报表发送" %}
+{% set crumb_href = "/reports#runs" %}
+{% set trigger_name = {"schedule": "定时", "manual": "手动全量", "test": "测试"}.get(run.trigger, run.trigger) %}
+{% set status_name = {"running": "发送中", "success": "成功", "partial": "部分成功", "failed": "失败", "interrupted": "已中断"}.get(run.status, run.status) %}
+
+{% block content %}
+<div class="stats">
+  <div class="stat"><div class="label">结果</div><div class="value small-value"><span class="status {{ run.status }}">{{ status_name }}</span></div><div class="hint">{{ trigger_name }} · {{ run.actor_name }}</div></div>
+  <div class="stat"><div class="label">这一期</div><div class="value small-value">{{ run.week_start }}{% if run.week_end != run.week_start %} ~ {{ run.week_end }}{% endif %}</div><div class="hint">{{ run.started_at|ts }} 开始</div></div>
+  <div class="stat"><div class="label">人数</div><div class="value small-value">{{ run.total }}</div><div class="hint">成功 {{ run.sent }}{% if run.failed %} · 失败 {{ run.failed }}{% endif %}</div></div>
+</div>
+{% if run.error %}<p class="error" role="alert">{{ run.error }}</p>{% endif %}
+
+<div class="card-review">
+  <section class="panel">
+    <div class="section-head"><div><h2>发给了谁</h2><p>点一个人，右边是他收到的卡片（和发出去的一模一样）。卡片内容保留 {{ keep_days }} 天</p></div></div>
+    {% if people %}
+    <div class="toolbar"><input type="search" data-filter-input="card-people" placeholder="按姓名或部门筛选" aria-label="筛选收件人" /></div>
+    <div class="table-wrap">
+      <table id="card-people">
+        <thead><tr><th>姓名</th><th>部门</th><th>结果</th></tr></thead>
+        <tbody>
+          {% for p in people %}
+          <tr{{ ' class="selected"'|safe if picked and picked.id == p.id }}>
+            <td><a href="/reports/runs/{{ run.id }}?card={{ p.id }}">{{ p.name }}</a></td>
+            <td>{{ p.dept or "—" }}</td>
+            <td><span class="status {{ 'success' if p.status == 'sent' else 'failed' }}">{{ "已发送" if p.status == "sent" else "失败" }}</span>{% if p.error %}<small>{{ p.error }}</small>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">这次发送没有记录卡片内容（这个功能上线之前发的，或者已经超过 {{ keep_days }} 天被清理了）。</p>
+    {% endif %}
+  </section>
+  {% if picked %}
+  <section class="panel card-preview">
+    <div class="section-head"><div><h2>{{ picked_name }} 收到的卡片</h2><p>{{ picked.sent_at|ts }} · {{ "已发送" if picked.status == "sent" else "发送失败：" ~ picked.error }}</p></div></div>
+    {{ rendered }}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "_base.html" %}
+{% set title = "额度提醒 · " ~ picked_name %}
+{% set section = "报表发送" %}
+{% set crumb_href = "/reports#alerts" %}
+
+{% block content %}
+<section class="panel card-preview">
+  <div class="section-head"><div><h2>{{ picked_name }} 收到的卡片</h2><p>{{ dept or "未归属部门" }} · {{ picked.sent_at|ts }} · {{ "已发送" if picked.status == "sent" else "发送失败：" ~ picked.error }}</p></div></div>
+  {{ rendered }}
+</section>
+{% endblock %}

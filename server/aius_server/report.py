@@ -21,6 +21,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta
 
+from . import cards
 from .analytics import Analytics, Filter, month_name
 from .db import Database
 from .directory import Directory
@@ -327,6 +328,7 @@ class UsageReports:
             period = self.period(kind, now)
             if full:
                 self.config.mark(f"report_{kind}", "last_period", period["start"])
+                cards.purge(self.db)  # 卡片内容只留 CARD_KEEP_DAYS 天
             data = self.build(period)
             leaders = self.directory.leaders()
             targets = self.targets(data, leaders) if full else list(only)
@@ -338,11 +340,14 @@ class UsageReports:
             for i, open_id in enumerate(targets):
                 led = leaders.get(open_id, [])
                 depts = [self.department(data, d) for d in led[:MAX_DEPTS]]
+                card = self.card(period, open_id, self.personal(data, open_id), depts, max(0, len(led) - MAX_DEPTS))
                 try:
-                    self.feishu.send_card(open_id, self.card(period, open_id, self.personal(data, open_id), depts, max(0, len(led) - MAX_DEPTS)))
+                    self.feishu.send_card(open_id, card)
                     sent += 1
+                    cards.store(self.db, open_id, card, "sent", run_id=run_id)  # 发送记录里能看到发给每个人的卡片
                 except FeishuError as e:
                     errors.append(f"{self.directory.user_name(open_id)}：{e}")
+                    cards.store(self.db, open_id, card, "failed", str(e), run_id=run_id)
                     if len(errors) >= 5 and sent == 0:  # 一开始就连着失败：多半是没开机器人或没权限，别再一个个试了
                         errors.append("连续失败，已停止这一轮发送")
                         break
@@ -432,4 +437,17 @@ class UsageReports:
         return out
 
     def runs(self, limit: int = 30) -> list[dict]:
-        return [self._view(r) for r in self.db.q("SELECT * FROM report_runs ORDER BY id DESC LIMIT ?", (limit,))]
+        rows = [self._view(r) for r in self.db.q("SELECT * FROM report_runs ORDER BY id DESC LIMIT ?", (limit,))]
+        counts = {r[0]: r[1] for r in self.db.q(f"SELECT run_id, COUNT(*) FROM sent_cards WHERE run_id IN ({','.join('?' * len(rows)) or 'NULL'}) GROUP BY run_id", [r["id"] for r in rows])}
+        return [{**r, "cards": counts.get(r["id"], 0)} for r in rows]
+
+    def run(self, run_id: int) -> dict | None:
+        row = self.db.one("SELECT * FROM report_runs WHERE id=?", (run_id,))
+        return self._view(row) if row else None
+
+    def recipients(self, run_id: int) -> list[dict]:
+        """这一轮发给了谁：每人一行（姓名、部门、结果），点进去看他收到的卡片。"""
+        return [
+            {**dict(r), "name": self.directory.user_name(r["open_id"]), "dept": self.directory.dept_path(self.directory.user_dept(r["open_id"]))}
+            for r in self.db.q("SELECT id, open_id, title, status, error, sent_at FROM sent_cards WHERE run_id=? ORDER BY id", (run_id,))
+        ]  # fmt: skip

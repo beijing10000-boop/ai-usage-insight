@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from . import cards
 from .access import ADMIN, REGULAR, ROLE_LABELS, ROLE_NOTES
 from .alerts import CHECK_MINUTES as ALERT_MINUTES
 from .alerts import SEND_HOURS as ALERT_HOURS
@@ -440,6 +441,40 @@ def register(app: FastAPI, c: Ctx) -> None:
         return c.page(
             "reports.html", viewer, "reports", request, kinds=kinds, scope=c.config.get("report")["scope"], runs=c.report.runs(), weekdays=WEEKDAYS,
             leaders=len(c.directory.leaders()), allowance=c.config.monthly_allowance, alert=alert,
+        )  # fmt: skip
+
+    @app.get("/reports/runs/{run_id}")
+    def report_run_page(request: Request, run_id: int, card: int = 0):
+        """一次报表发送发给了谁、每个人的结果；右边是选中的那个人收到的卡片（默认第一个）。"""
+        viewer, bad = guard(request, "reports")
+        if bad:
+            return bad
+        run = c.report.run(run_id)
+        if not run:
+            return c.notice(viewer, "没有这次发送", "这条发送记录不存在。", 404, ("回到报表发送", "/reports#runs"), "reports")
+        people = c.report.recipients(run_id)
+        picked = cards.get(c.db, card) if card else (cards.get(c.db, people[0]["id"]) if people else None)
+        if picked and picked["run_id"] != run_id:
+            picked = None
+        return c.page(
+            "report_run.html", viewer, "reports", request, run=run, people=people, picked=picked, rendered=cards.render(picked["card"]) if picked else "",
+            picked_name=c.directory.user_name(picked["open_id"]) if picked else "", keep_days=cards.CARD_KEEP_DAYS,
+        )  # fmt: skip
+
+    @app.get("/reports/cards/{card_id}")
+    def report_card_page(request: Request, card_id: int):
+        """一张发出去的卡片（额度提醒的从这里看；报表的跳到那一轮的页面）。"""
+        viewer, bad = guard(request, "reports")
+        if bad:
+            return bad
+        picked = cards.get(c.db, card_id)
+        if not picked:
+            return c.notice(viewer, "没有这张卡片", f"卡片内容只保留 {cards.CARD_KEEP_DAYS} 天，可能已经清理了。", 404, ("回到报表发送", "/reports"), "reports")
+        if picked["run_id"]:
+            return RedirectResponse(f"/reports/runs/{picked['run_id']}?card={card_id}", status_code=303)
+        return c.page(
+            "report_card.html", viewer, "reports", request, picked=picked, rendered=cards.render(picked["card"]),
+            picked_name=c.directory.user_name(picked["open_id"]), dept=c.directory.dept_path(c.directory.user_dept(picked["open_id"])),
         )  # fmt: skip
 
     @app.post("/reports")

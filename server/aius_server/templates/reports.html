@@ -129,7 +129,7 @@
   {% if alert.records %}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>时间</th><th>姓名</th><th>档位</th><th class="num">当时已用（点）</th><th>结果</th><th>说明</th></tr></thead>
+      <thead><tr><th>时间</th><th>姓名</th><th>档位</th><th class="num">当时已用（点）</th><th>结果</th><th>说明</th><th>卡片</th></tr></thead>
       <tbody>
         {% for r in alert.records %}
         <tr>
@@ -139,6 +139,7 @@
           <td class="num">{{ r.used|num }}</td>
           <td><span class="status {{ {'sent': 'success', 'failed': 'failed', 'sending': 'running'}.get(r.status, 'muted') }}">{{ r.status_name }}</span></td>
           <td>{{ r.error }}</td>
+          <td class="nowrap">{% if r.card_id %}<a href="/reports/cards/{{ r.card_id }}">查看</a>{% else %}<span class="muted">—</span>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -154,7 +155,7 @@
   {% if runs %}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>时间</th><th>报表</th><th>这一期</th><th>方式</th><th>结果</th><th class="num">人数</th><th class="num">成功</th><th class="num">失败</th><th>说明</th></tr></thead>
+      <thead><tr><th>时间</th><th>报表</th><th>这一期</th><th>方式</th><th>结果</th><th class="num">人数</th><th class="num">成功</th><th class="num">失败</th><th>说明</th><th>卡片</th></tr></thead>
       <tbody>
         {% for r in runs %}
         <tr>
@@ -167,6 +168,7 @@
           <td class="num">{{ r.sent }}</td>
           <td class="num">{{ r.failed or "—" }}</td>
           <td>{{ r.error }}</td>
+          <td class="nowrap">{% if r.cards %}<a href="/reports/runs/{{ r.id }}">查看 {{ r.cards }} 张</a>{% else %}<span class="muted">—</span>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
