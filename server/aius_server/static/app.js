@@ -72,7 +72,8 @@
   };
   document.addEventListener("submit", async (event) => {
     const form = event.target;
-    if (form.id === "ask-form" || form.method === "dialog" || form.method === "get") return;
+    // 表单自己已经拦下来的（比如选人框还没从列表里选人）没有真的提交，不能禁用按钮，不然改好了也点不了
+    if (event.defaultPrevented || form.id === "ask-form" || form.method === "dialog" || form.method === "get") return;
     if (form.dataset.confirm && !form.dataset.confirmed) {
       event.preventDefault();
       const ok = await UIKit.confirm({
@@ -142,11 +143,14 @@
   }
   // ---- 成员用量的找人框：边输入边列出匹配的人 ----
   // 不用浏览器自带的 datalist：它的选项是异步换上去的，很多浏览器输入时不弹出来，选中后框里还会变成用户 ID
+  // data-member-pick="隐藏字段的 id"：表单里选人用——选中后框里显示姓名、隐藏字段填 open_id，不跳转；没选中不让提交
   for (const input of $$("input[data-member-search]")) {
     const box = document.getElementById(input.getAttribute("aria-controls"));
+    const pick = input.dataset.memberPick ? document.getElementById(input.dataset.memberPick) : null;
     let timer = 0;
     let latest = 0;
     let active = -1;
+    let items = [];
     const options = () => $$('[role="option"]', box);
     const close = () => {
       box.hidden = true;
@@ -168,8 +172,16 @@
       node.textContent = text;
       return node;
     };
+    const choose = (index) => {
+      const item = items[index];
+      if (!item) return;
+      input.value = item.name;
+      pick.value = item.id;
+      input.setCustomValidity("");
+      close();
+    };
     const render = (data, query) => {
-      const items = data.items || [];
+      items = data.items || [];
       if (!items.length) {
         box.replaceChildren(line("li", "member-results-empty", `没有找到「${query}」：换成姓名的一部分、英文名或邮箱试试`));
       } else {
@@ -180,7 +192,7 @@
             option.setAttribute("role", "option");
             option.setAttribute("aria-selected", "false");
             const link = document.createElement("a");
-            link.href = item.href;
+            link.href = pick ? "#" : item.href;
             link.tabIndex = -1;
             link.append(
               line("strong", "", item.name),
@@ -190,7 +202,7 @@
             option.append(link);
             return option;
           }),
-          ...(data.more ? [line("li", "member-results-empty", "只列出前 10 个，多输入几个字可以缩小范围；直接回车可以看全部")] : []),
+          ...(data.more ? [line("li", "member-results-empty", pick ? "只列出前 10 个，多输入几个字可以缩小范围" : "只列出前 10 个，多输入几个字可以缩小范围；直接回车可以看全部")] : []),
         );
       }
       active = -1;
@@ -200,6 +212,10 @@
     };
     input.addEventListener("input", () => {
       clearTimeout(timer);
+      if (pick) {
+        pick.value = ""; // 改了字就得重新从列表里选
+        input.setCustomValidity("");
+      }
       const query = input.value.trim();
       if (!query) return close();
       timer = setTimeout(async () => {
@@ -218,7 +234,12 @@
         box.hidden = false;
         input.setAttribute("aria-expanded", "true");
         highlight(active + (event.key === "ArrowDown" ? 1 : -1));
-      } else if (event.key === "Enter" && !box.hidden && active >= 0) {
+      } else if (event.key === "Enter" && pick && !pick.value) {
+        // 选人：回车先选中高亮的那个（只匹配到一个人就直接选他），选好了再回车才提交
+        event.preventDefault();
+        if (active >= 0) choose(active);
+        else if (items.length === 1) choose(0);
+      } else if (event.key === "Enter" && !pick && !box.hidden && active >= 0) {
         event.preventDefault();
         location.href = options()[active].querySelector("a").href;
       } else if (event.key === "Escape" && !box.hidden) {
@@ -227,6 +248,20 @@
       }
     });
     box.addEventListener("mousedown", (event) => event.preventDefault()); // 点列表时输入框不失焦，点击照常打开链接
+    if (pick) {
+      box.addEventListener("click", (event) => {
+        const option = event.target.closest('[role="option"]');
+        if (!option) return;
+        event.preventDefault();
+        choose(options().indexOf(option));
+      });
+      input.form?.addEventListener("submit", (event) => {
+        if (pick.value) return;
+        event.preventDefault();
+        input.setCustomValidity("请输入姓名，从下面的列表里选一个人");
+        input.reportValidity();
+      });
+    }
     input.addEventListener("blur", close);
     input.addEventListener("focus", () => {
       if (input.value.trim() && box.children.length) {

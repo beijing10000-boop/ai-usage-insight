@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # 从 usage_logs 生成 usage_agg 的那条语句；{where} 是要汇总的范围（同步时是刚写入的那个「日期 × 主体」）
 AGG_INSERT = (
@@ -222,6 +222,20 @@ CREATE TABLE IF NOT EXISTS quota_alerts (
     created_at  INTEGER NOT NULL,
     PRIMARY KEY (month, open_id, level)
 );
+-- 发出去的每一张卡片（v8）：报表发送记录和额度提醒里能看到发给每个人的卡片内容。卡片内容只留 CARD_KEEP_DAYS 天
+CREATE TABLE IF NOT EXISTS sent_cards (
+    id          INTEGER PRIMARY KEY,
+    run_id      INTEGER,                       -- 报表发送记录 report_runs.id；额度提醒是 NULL
+    alert       TEXT NOT NULL DEFAULT '',      -- 额度提醒：month|open_id|level（对应 quota_alerts）
+    open_id     TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    card        TEXT NOT NULL,                 -- 飞书卡片 JSON，和发出去的一模一样
+    status      TEXT NOT NULL,                 -- sent | failed
+    error       TEXT NOT NULL DEFAULT '',
+    sent_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sent_cards_run ON sent_cards(run_id);
+CREATE INDEX IF NOT EXISTS idx_sent_cards_alert ON sent_cards(alert);
 -- 个别人的追加额度（v7）：一般每人追加 allowance.extra 点，不一样的记在这里
 CREATE TABLE IF NOT EXISTS quota_extras (
     open_id     TEXT PRIMARY KEY,

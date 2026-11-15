@@ -16,6 +16,7 @@ import threading
 import time
 from datetime import datetime
 
+from . import cards
 from .analytics import month_name
 from .db import Database
 from .directory import Directory
@@ -134,6 +135,8 @@ class QuotaAlerts:
         with self._lock:
             month = self.month_of(now)
             todo = self.pending(now)
+            if todo:
+                cards.purge(self.db)  # 卡片内容只留 CARD_KEEP_DAYS 天
             stamp = int(time.time())
             with self.db.tx() as c:
                 for oid, used, top, new in todo:
@@ -146,13 +149,15 @@ class QuotaAlerts:
 
     def _send(self, month: str, open_id: str, used: float, level: dict, now: datetime, record: bool = True) -> dict:
         status, error = "sent", ""
+        card = self.card(open_id, used, level, now)
         try:
-            self.feishu.send_card(open_id, self.card(open_id, used, level, now))
+            self.feishu.send_card(open_id, card)
         except FeishuError as e:
             status, error = "failed", str(e)[:300]
             log.warning("额度提醒发送失败 %s %s：%s", open_id, level["level"], e)
         if record:
             self.db.x("UPDATE quota_alerts SET status=?, error=?, used=? WHERE month=? AND open_id=? AND level=?", (status, error, round(used, 2), month, open_id, level["level"]))
+            cards.store(self.db, open_id, card, status, error, alert=f"{month}|{open_id}|{level['level']}")  # 提醒记录里能看到这张卡片
         self.sleep(SEND_GAP)
         return {"open_id": open_id, "level": level["level"], "used": used, "status": status, "error": error}
 
@@ -227,7 +232,11 @@ class QuotaAlerts:
 
     # ---------- 页面 ----------
     def records(self, limit: int = 50) -> list[dict]:
-        rows = self.db.q("SELECT * FROM quota_alerts WHERE status IN ('sending','sent','failed') ORDER BY created_at DESC, line DESC LIMIT ?", (limit,))
+        rows = self.db.q(
+            "SELECT q.*, (SELECT MAX(id) FROM sent_cards s WHERE s.alert = q.month || '|' || q.open_id || '|' || q.level) AS card_id "
+            "FROM quota_alerts q WHERE q.status IN ('sending','sent','failed') ORDER BY q.created_at DESC, q.line DESC LIMIT ?",
+            (limit,),
+        )
         return [
             {**dict(r), "name": self.directory.user_name(r["open_id"]), "level_name": level_name(r["level"]), "status_name": STATUS.get(r["status"], r["status"])}
             for r in rows

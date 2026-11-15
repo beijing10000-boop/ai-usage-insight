@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import stat, allowance_panel, suggest_input %}
+{% from "_macros.html" import stat, allowance_panel, member_pick %}
 {% set title = "额度分配" %}
 {% set section = "运营" %}
 
@@ -53,7 +53,7 @@
   <form method="post" action="/quota" class="add-row">
     <input type="hidden" name="action" value="extra_set" />
     <label class="offscreen-label" for="extra-who">人员</label>
-    {{ suggest_input("extra-who", "target", "user", "个别人：输入姓名，从列表里选") }}
+    {{ member_pick("extra-who", "target", "个别人：输入姓名、英文名或邮箱，从列表里选") }}
     <label class="offscreen-label" for="extra-amount">追加额度</label>
     <input id="extra-amount" name="amount" type="number" min="0" step="any" required placeholder="追加额度（点）" />
     <label class="offscreen-label" for="extra-note">备注</label>

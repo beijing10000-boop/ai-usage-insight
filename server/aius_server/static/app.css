@@ -468,6 +468,102 @@ progress.meter.failed::-moz-progress-bar {
   border-top: 1px solid var(--line);
 }
 
+/* 发送记录里看发给每个人的卡片：左边收件人，右边按飞书卡片的样子画出来 */
+.card-review {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 520px);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .card-review {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.card-review tr.selected td {
+  background: var(--accent-soft);
+}
+.card-preview {
+  position: sticky;
+  top: 16px;
+}
+.fcard {
+  max-width: 520px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.fcard-head {
+  padding: 12px 16px;
+  font-weight: 600;
+  color: #1f2329;
+  background: #e1eaff;
+}
+.fcard-violet { background: #ece2fe; }
+.fcard-indigo { background: #e0e9ff; }
+.fcard-orange { background: #feead2; }
+.fcard-red { background: #fde2e2; }
+.fcard-carmine { background: #fdddef; }
+.fcard-green { background: #d9f5d6; }
+.fcard-body {
+  padding: 12px 16px 14px;
+  display: grid;
+  gap: 10px;
+}
+.fcard-center {
+  text-align: center;
+}
+.fcard-font-grey {
+  color: var(--text-3);
+}
+.fcard-cols {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+}
+.fcard-grey {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.fcard-col {
+  flex: 1;
+  min-width: 0;
+}
+.fcard-hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 0;
+}
+.fcard-actions {
+  display: flex;
+  gap: 8px;
+}
+.fcard-btn {
+  display: inline-block;
+  padding: 4px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-decoration: none;
+}
+.fcard-btn-primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.fcard-note {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.fcard-unknown {
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: var(--text-3);
+}
+
 /* 成员用量的找人框：输入框下面的实时匹配列表 */
 .member-search {
   position: relative;
