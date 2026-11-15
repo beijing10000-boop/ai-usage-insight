@@ -24,6 +24,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "report_daily": {"enabled": False, "hour": 9, "last_push_date": "", "last_period": ""},
     "report_weekly": {"enabled": False, "weekday": 1, "hour": 9, "last_push_date": "", "last_period": ""},
     "report_monthly": {"enabled": False, "day": 1, "hour": 9, "last_push_date": "", "last_period": ""},
+    # 额度告警：这个月的个人用量到了每人每月基础额度的这些百分比时提醒本人；guide_url = 卡片上「额度申请说明」的链接（可不填）；
+    # extra = 每次追加的额度（点），超过 100% 的档位卡片上和基础额度一起列出来
+    "quota_alert": {"enabled": False, "thresholds": [80, 100, 180, 200], "guide_url": "", "extra": 2000},
 }
 
 
@@ -87,6 +90,33 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
             out["weekday"] = _int(patch["weekday"], 1, 7, "发送日")
         if key == "report_monthly" and "day" in patch:
             out["day"] = _int(patch["day"], 1, 28, "发送日（每月几号）")
+    elif key == "quota_alert":
+        if "enabled" in patch:
+            out["enabled"] = bool(patch["enabled"])
+        if "thresholds" in patch:
+            raw = patch["thresholds"]
+            items = raw if isinstance(raw, list) else str(raw).replace("，", ",").replace("%", "").split(",")
+            try:
+                values = sorted({int(float(str(x).strip())) for x in items if str(x).strip()})
+            except ValueError:
+                raise ConfigError("告警档位要填数字，用逗号隔开，例如 80,100,180,200") from None
+            if not values or len(values) > 8 or values[0] < 1 or values[-1] > 1000:
+                raise ConfigError("告警档位要在 1 到 1000（%）之间，至少 1 个、最多 8 个")
+            out["thresholds"] = values
+        if "guide_url" in patch:
+            url = str(patch["guide_url"] or "").strip()
+            if url and not url.startswith(("http://", "https://")):
+                raise ConfigError("额度申请说明的链接要以 http:// 或 https:// 开头，不需要就留空")
+            out["guide_url"] = url[:500]
+        if "extra" in patch:
+            raw = str(patch["extra"] or "").strip()
+            try:
+                extra = float(raw) if raw else float(DEFAULTS["quota_alert"]["extra"])  # 留空 = 默认的 2000 点
+            except ValueError:
+                raise ConfigError("追加额度要填数字（点），留空就是默认的 2000 点") from None
+            if not 0 <= extra <= 1e9:
+                raise ConfigError("追加额度不能是负数")
+            out["extra"] = round(extra, 2)
     else:
         raise ConfigError("没有这个配置项")
     return out

@@ -15,6 +15,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from . import web
 from .access import Access, Viewer
+from .alerts import QuotaAlerts
 from .analytics import Analytics, Filter, month_aligned, month_end, month_name
 from .config import Settings
 from .db import Database
@@ -52,6 +53,10 @@ FLASH = {
     "report_test": ("success", "测试报表已发给你，去飞书里看一下"),
     "report_pushed": ("success", "报表已开始发送，刷新页面可以在发送记录里看到发到第几个人了"),
     "report_saved_skip": ("success", "已保存。今天已经过了发送时间，这一期不会自动补发，从下一个发送时间开始发；要发这一期请点「立即全量发送」"),
+    "alert_saved": ("success", "额度告警设置已保存"),
+    "alert_baseline": ("success", "已保存。开启前已经超过档位的人这次不提醒，等他们跨过下一个档位时再提醒；需要的话可以点「补发」"),
+    "alert_test": ("success", "额度提醒已发给你，去飞书里看一下"),
+    "alert_catch_up": ("success", "已开始给开启前已超过档位的人补发，刷新页面可以看到提醒记录"),
     "revoked": ("success", "令牌已撤销"),
     "granted": ("success", "已设为运营管理员"),
     "role_removed": ("success", "已取消运营管理员"),
@@ -128,6 +133,7 @@ class Ctx:
     insight: Insight
     report: UsageReports
     vault: Vault
+    alerts: QuotaAlerts
 
     def __post_init__(self) -> None:
         self.signer = URLSafeTimedSerializer(self.s.secret_key, salt="aius-session")

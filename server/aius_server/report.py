@@ -241,8 +241,12 @@ class UsageReports:
         intro = f"这是{whose}在 **{period['label']}** 的{TITLE}{period['name']}。"
         elements: list[dict] = [_md(f"**{name}**，{intro}" if name else intro)]
 
-        # 个人用量：点数、金额、次数（周报月报再加天数）都在一排指标里，下面是常用场景
+        # 个人用量：标题下面先写这个月的基础额度用到了哪儿，再是点数、金额、次数（周报月报再加天数）一排指标，最后是常用场景
         elements.append(_md("**👤 个人用量**"))
+        if per:
+            used = me["month_used"]
+            state = f"剩余 {points(per - used)} 点" if used < per else f"已用完，超出 {points(used - per)} 点（来自追加的额度）"
+            elements.append(_md(f"📊 截止到 {short(end)} 基础额度：已用 **{points(used)} / {points(per)} 点**（{used / per * 100:.0f}%），{state}"))
         if me["amount"] > 0:
             stats = [("消耗点数", points(me["amount"])), ("消耗金额", money(me["amount"] * price)), ("使用次数", f"{me['records']:,}")]
             if kind != "daily":
@@ -252,10 +256,6 @@ class UsageReports:
                 elements.append(_md(scene_lines(me["scenes"], me["amount"])))
         else:
             elements.append(_md(f"🌙 {period['label']}没有 AI 用量记录"))
-        if per:
-            used = me["month_used"]
-            state = f"剩余 {points(per - used)} 点" if used < per else f"已用完，超出 {points(used - per)} 点（来自追加的额度）"
-            elements.append(_md(f"📊 截止到 {short(end)} 基础额度：已用 **{points(used)} / {points(per)} 点**（{used / per * 100:.0f}%），{state}"))
 
         # 负责的部门：点数、金额、活跃人数、人均都在一排指标里，下面是用量最多的人和常用场景
         for d in depts:

@@ -257,7 +257,7 @@ def test_config_page_actions(env):
 def test_reports_page_actions(env):
     c = env.browser("admin@example.com")
     page = c.get("/reports").text
-    assert all(f'id="{k}"' in page for k in ("daily", "weekly", "monthly")) and page.count("已关闭") == 3  # 默认三个都关着
+    assert all(f'id="{k}"' in page for k in ("daily", "weekly", "monthly")) and page.count("已关闭") == 4  # 默认三种报表和额度告警都关着
     assert 'class="nav-link active" href="/reports"' in page
     tomorrow = datetime.now(CST).isoweekday() % 7 + 1  # 不是今天：保存后今天不会到点
     r = c.post("/reports", data={"action": "save", "kind": "weekly", "enabled": "1", "weekday": str(tomorrow), "hour": "10"})

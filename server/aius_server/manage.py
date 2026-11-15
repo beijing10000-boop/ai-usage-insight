@@ -14,6 +14,8 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from .access import ADMIN, REGULAR, ROLE_LABELS, ROLE_NOTES
+from .alerts import CHECK_MINUTES as ALERT_MINUTES
+from .alerts import SEND_HOURS as ALERT_HOURS
 from .core import Ctx
 from .db import dumps, loads
 from .feishu import CST, FeishuError
@@ -404,20 +406,46 @@ def register(app: FastAPI, c: Ctx) -> None:
             {"key": k, "name": name, "cfg": c.config.get(f"report_{k}"), "period": c.report.period(k), "handled": c.report.handled(k, datetime.now(CST))}
             for k, name in REPORT_KINDS.items()
         ]  # fmt: skip
+        now = datetime.now(CST)
+        alert = {
+            "cfg": c.config.get("quota_alert"), "levels": c.alerts.levels(now), "records": c.alerts.records(), "waiting": len(c.alerts.waiting(now)),
+            "extra": c.alerts.extra(), "hours": ALERT_HOURS, "minutes": ALERT_MINUTES,
+        }  # fmt: skip
         return c.page(
             "reports.html", viewer, "reports", request, kinds=kinds, scope=c.config.get("report")["scope"], runs=c.report.runs(), weekdays=WEEKDAYS,
-            leaders=len(c.directory.leaders()), allowance=c.config.monthly_allowance,
+            leaders=len(c.directory.leaders()), allowance=c.config.monthly_allowance, alert=alert,
         )  # fmt: skip
 
     @app.post("/reports")
     def reports_post(
         request: Request, action: str = Form(...), kind: str = Form(""), enabled: str = Form(""), hour: str = Form(""),
-        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""),
+        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""), thresholds: str = Form(""), guide_url: str = Form(""),
+        extra: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
             return bad
         back = ("回到报表发送", "/reports")
+        if action == "alert_save":
+            try:
+                saved = c.alerts.save({"enabled": enabled == "1", "thresholds": thresholds, "guide_url": guide_url, "extra": extra}, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, "额度告警设置没有保存", str(e), back, "reports")
+            levels = "、".join(f"{t}%" for t in saved["thresholds"])
+            note = f"（开启前已超过档位的 {saved['baseline']} 人这次不提醒）" if saved["baseline"] else ""
+            c.db.audit(viewer.open_id, "report", f"额度告警：{'开启' if saved['enabled'] else '关闭'}，档位 {levels}{note}")
+            return c.done("/reports#alerts", "alert_baseline" if saved["baseline"] else "alert_saved")
+        if action == "alert_test":
+            sent = c.alerts.test_send(viewer.open_id)
+            c.db.audit(viewer.open_id, "report", f"额度提醒测试发送给自己：{sent['status']}")
+            if sent["status"] != "sent":
+                return oops(viewer, "额度提醒没有发出去", sent["error"] or "发送失败。请确认应用已开启机器人能力，并开通 im:message:send_as_bot 权限。", back, "reports")
+            return c.done("/reports#alerts", "alert_test")
+        if action == "alert_catch_up":
+            waiting = len(c.alerts.waiting(datetime.now(CST)))
+            threading.Thread(target=c.alerts.catch_up, args=(datetime.now(CST),), name="quota-alerts-catch-up", daemon=True).start()
+            c.db.audit(viewer.open_id, "report", f"额度告警：给开启前已超过档位的 {waiting} 人补发当前档位")
+            return c.done("/reports#alerts", "alert_catch_up")
         if action == "scope":
             try:
                 saved = c.config.save("report", {"scope": scope}, viewer.open_id)

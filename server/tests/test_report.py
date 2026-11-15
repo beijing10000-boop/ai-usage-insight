@@ -114,10 +114,13 @@ def test_monthly_allowance_line(env):
     report = env.ctx.report
     period = report.period("daily")
     data = report.build(period)
-    text = text_of(report.card(period, "ou_bob", report.personal(data, "ou_bob"), []))
+    card = report.card(period, "ou_bob", report.personal(data, "ou_bob"), [])
+    text = text_of(card)
     used = data["month_used"]["ou_bob"]  # 这个月 1 日到昨天
     end = date.fromisoformat(period["end"])
     assert f"📊 截止到 {end.month:02d}/{end.day:02d} 基础额度：已用 **" in text and "/ 20 点" in text and ("已用完" in text if used >= 20 else "剩余" in text)
+    # 紧跟在「个人用量」标题下面，在那排指标前面
+    assert card["elements"][1]["content"] == "**👤 个人用量**" and card["elements"][2]["content"].startswith("📊 截止到") and card["elements"][3]["tag"] == "column_set"
 
 
 def test_push_scope_and_test_send(env):

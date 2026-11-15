@@ -85,6 +85,77 @@
   {% endfor %}
 </div>
 
+{% set acfg = alert.cfg %}
+<section class="panel" id="alerts">
+  <div class="section-head">
+    <div><h2>额度告警</h2><p>每个人这个月的用量到了每人每月基础额度{% if allowance %}（{{ allowance|num }} 点）{% endif %}的下面这些档位时，给他本人发一张飞书卡片提醒。
+      每个档位每月只提醒一次；一下跨过好几个档位只发最高的那个。超过 100% 的档位，卡片上把基础额度和追加额度（{{ alert.extra|num }} 点）一起列出来。
+      只在 {{ alert.hours[0] }}:00–{{ alert.hours[1] }}:00 之间发，每 {{ alert.minutes }} 分钟看一次（当天的用量靠当天增量同步，每 10 分钟更新）。</p></div>
+    <span class="status {{ 'ok' if acfg.enabled else 'muted' }}">{{ "已开启" if acfg.enabled else "已关闭" }}</span>
+  </div>
+  {% if not allowance %}<p class="notice">还没有设置每人每月基础额度：先在「额度分配」里设置，额度告警才会生效。</p>{% endif %}
+  <p class="help">这个月现在：{% for l in alert.levels %}到 {{ l.threshold }}% 的 <b>{{ l.people }}</b> 人{{ "；" if not loop.last }}{% endfor %}。打开开关时已经超过档位的人不补发，等他们跨过下一个档位时再提醒。</p>
+  <form method="post" action="/reports">
+    <input type="hidden" name="action" value="alert_save" />
+    <div class="fields">
+      <div>
+        <label for="alert-enabled">额度告警</label>
+        <select id="alert-enabled" name="enabled">
+          <option value="1"{{ " selected" if acfg.enabled }}>开启</option>
+          <option value="0"{{ " selected" if not acfg.enabled }}>关闭</option>
+        </select>
+      </div>
+      <div>
+        <label for="alert-thresholds">告警档位（%，用逗号隔开）</label>
+        <input id="alert-thresholds" name="thresholds" value="{{ acfg.thresholds|join(',') }}" maxlength="60" />
+      </div>
+      <div>
+        <label for="alert-extra">追加额度（点，默认 2000）</label>
+        <input id="alert-extra" name="extra" value="{{ acfg.extra|num }}" inputmode="decimal" maxlength="12" />
+      </div>
+      <div>
+        <label for="alert-guide">额度申请说明的链接（可不填）</label>
+        <input id="alert-guide" name="guide_url" value="{{ acfg.guide_url }}" type="url" maxlength="500" placeholder="https://" />
+      </div>
+    </div>
+    <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>
+  </form>
+  <div class="actions report-actions">
+    <form method="post" action="/reports" class="inline">
+      <input type="hidden" name="action" value="alert_test" />
+      <button type="submit" class="btn small">{{ icon("send") }}测试发送给我</button>
+    </form>
+    {% if acfg.enabled and alert.waiting %}
+    <form method="post" action="/reports" class="inline" data-confirm="给开启前已经超过档位的 {{ alert.waiting }} 人补发提醒？"
+      data-confirm-message="每人发一张卡片，写他现在到了哪个档位。发出去的消息不能撤回。" data-confirm-text="补发">
+      <input type="hidden" name="action" value="alert_catch_up" />
+      <button type="submit" class="btn small">补发给开启前已超过的 {{ alert.waiting }} 人</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if alert.records %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>姓名</th><th class="num">档位</th><th class="num">当时已用（点）</th><th>结果</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for r in alert.records %}
+        <tr>
+          <td class="nowrap">{{ r.created_at|ts }}</td>
+          <td>{{ r.name }}</td>
+          <td class="num">{{ r.threshold }}%</td>
+          <td class="num">{{ r.used|num }}</td>
+          <td><span class="status {{ {'sent': 'success', 'failed': 'failed', 'sending': 'running'}.get(r.status, 'muted') }}">{{ r.status_name }}</span></td>
+          <td>{{ r.error }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有发过额度提醒。</p>
+  {% endif %}
+</section>
+
 <section class="panel" id="runs">
   <div class="section-head"><div><h2>发送记录</h2><p>最近 30 次，最新的在最上面</p></div></div>
   {% if runs %}

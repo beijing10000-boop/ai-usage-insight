@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # 从 usage_logs 生成 usage_agg 的那条语句；{where} 是要汇总的范围（同步时是刚写入的那个「日期 × 主体」）
 AGG_INSERT = (
@@ -208,6 +208,17 @@ CREATE TABLE IF NOT EXISTS app_owners (
     owner       TEXT NOT NULL,                 -- 所有者姓名
     created     TEXT NOT NULL DEFAULT '',      -- 应用创建时间（Aily 给的 YYYY-MM-DD HH:MM:SS）
     updated_at  INTEGER NOT NULL
+);
+-- 额度告警（v7）：每人每月每个档位一行，发过（或者不用发）的就不再发
+CREATE TABLE IF NOT EXISTS quota_alerts (
+    month       TEXT NOT NULL,                 -- YYYY-MM
+    open_id     TEXT NOT NULL,
+    threshold   INTEGER NOT NULL,              -- 档位：基础额度的百分之几
+    used        REAL NOT NULL,                 -- 这个月当时已用的点数
+    status      TEXT NOT NULL,                 -- sending | sent | failed | covered（同时跨过了更高的档位）| baseline（开启前已超过）
+    error       TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (month, open_id, threshold)
 );
 -- 额度分配：给部门 / 人员 / 应用在一个周期里分配的点数
 CREATE TABLE IF NOT EXISTS quota_allocations (
