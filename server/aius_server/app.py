@@ -30,6 +30,7 @@ from .insight import Insight
 from .prefs import Config
 from .quota import Quotas
 from .remote_mcp import build_remote_mcp
+from .alerts import QuotaAlerts
 from .report import UsageReports
 from .scheduler import Scheduler
 from .sync import SyncEngine
@@ -64,11 +65,12 @@ def create_app(settings: Settings | None = None, feishu=None) -> FastAPI:
     engine = SyncEngine(db, fs, directory)
     analytics = Analytics(db, directory, config)
     report = UsageReports(db, fs, directory, analytics, config, s.public_url, engine)
+    alerts = QuotaAlerts(db, fs, directory, config, s.public_url, engine)
     ctx = Ctx(
         s=s, db=db, fs=fs, directory=directory, config=config, access=Access(s, db, directory), engine=engine,
-        analytics=analytics, quotas=Quotas(db, directory), insight=Insight(s, analytics, vault), report=report, vault=vault,
+        analytics=analytics, quotas=Quotas(db, directory), insight=Insight(s, analytics, vault), report=report, vault=vault, alerts=alerts,
     )  # fmt: skip
-    scheduler = Scheduler(db, config, engine, report)
+    scheduler = Scheduler(db, config, engine, report, alerts=alerts)
     mcp_gate, mcp_server = build_remote_mcp(ctx)
     if not vault.configured:
         vault.bootstrap_token()
@@ -78,6 +80,7 @@ def create_app(settings: Settings | None = None, feishu=None) -> FastAPI:
     async def lifespan(_app: FastAPI):
         engine.start_worker()  # 同步线程总是要有，不然手动同步会一直「等待中」；启动时先把上次没跑完的任务从断点续上
         report.recover()  # 上次被重启打断的报表发送记成「已中断」，不然一直显示「发送中」
+        alerts.recover()  # 额度提醒同理：正在发的记成发送失败
         if s.scheduler:  # AIUS_SCHEDULER=0 只关掉「到点自动做」的事：定时同步、巡检、周报、通讯录定时同步
             directory.start()  # 快照过期（或从没同步过）时立即同步一次
             scheduler.start()

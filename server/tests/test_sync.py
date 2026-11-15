@@ -157,7 +157,7 @@ def test_old_databases_get_the_progress_column(tmp_path):
     c.commit()
     c.close()
     db = Database(path)
-    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 6
+    assert db.val("SELECT progress FROM sync_runs WHERE id=1") == "" and db.val("PRAGMA user_version") == 7
     assert db.val("SELECT COUNT(*) FROM reconcile") == 0  # v4 的数据核对表也补上了
     assert db.val("SELECT kind FROM report_runs WHERE id=1") == "weekly"  # v5：老的周报记录算周报
 

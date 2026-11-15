@@ -1,5 +1,5 @@
 {% extends "_base.html" %}
-{% from "_macros.html" import stat, allowance_panel %}
+{% from "_macros.html" import stat, allowance_panel, suggest_input %}
 {% set title = "额度分配" %}
 {% set section = "运营" %}
 
@@ -14,7 +14,7 @@
 
 <section class="panel allowance-setting">
   <div class="section-head">
-    <div><h2>每人每月基础额度</h2><p>飞书的个人 AI 额度按自然月发放、每月 1 日重置，几个 AI 应用共用一份。填上之后，驾驶舱、部门运营、我的用量里会按自然月显示每个人用了多少、还剩多少（只按基础额度算，平台拿不到每个人追加了多少）。留空就不显示。</p></div>
+    <div><h2>每人每月基础额度</h2><p>飞书的个人 AI 额度按自然月发放、每月 1 日重置，几个 AI 应用共用一份。填上之后，驾驶舱、部门运营、我的用量里会按自然月显示每个人用了多少、还剩多少。留空就不显示。追加额度见下面一块。</p></div>
   </div>
   <form method="post" action="/quota" class="add-row">
     <input type="hidden" name="action" value="allowance" />
@@ -32,6 +32,60 @@
     </label>
     <noscript><button type="submit" class="btn">查看</button></noscript>
   </form>
+  {% endif %}
+</section>
+
+<section class="panel" id="extras">
+  <div class="section-head">
+    <div><h2>追加额度</h2><p>平台拿不到谁追加了额度，按用量推断：这个月用量超过 <b>{{ topup.topped_at|num }}</b> 点的，就当作已经追加过。
+      追加过的人，额度提醒、周报、月报里会把追加额度列出来，已用比例按「基础 + 追加」合计算，额度提醒也按合计的 80%、100% 再提醒一轮。
+      一般每人追加 <b>{{ topup.extra|num }}</b> 点；个别人追加得不一样，在下面单独设置。</p></div>
+  </div>
+  <form method="post" action="/quota" class="add-row">
+    <input type="hidden" name="action" value="topup" />
+    <label class="inline-field" for="topup-extra">一般每人追加</label>
+    <input id="topup-extra" name="extra" type="number" min="0" step="any" value="{{ '%g'|format(topup.extra) }}" />
+    <label class="inline-field" for="topup-at">点；用量超过</label>
+    <input id="topup-at" name="topped_at" type="number" min="0" step="any" value="{{ '%g'|format(topup.topped_at) }}" />
+    <span class="inline-field">点算已追加</span>
+    <button type="submit" class="btn">保存</button>
+  </form>
+  <form method="post" action="/quota" class="add-row">
+    <input type="hidden" name="action" value="extra_set" />
+    <label class="offscreen-label" for="extra-who">人员</label>
+    {{ suggest_input("extra-who", "target", "user", "个别人：输入姓名，从列表里选") }}
+    <label class="offscreen-label" for="extra-amount">追加额度</label>
+    <input id="extra-amount" name="amount" type="number" min="0" step="any" required placeholder="追加额度（点）" />
+    <label class="offscreen-label" for="extra-note">备注</label>
+    <input id="extra-note" name="note" maxlength="100" placeholder="备注（可不填）" />
+    <button type="submit" class="btn">保存</button>
+  </form>
+  {% if extras %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>姓名</th><th>部门</th><th class="num">追加额度（点）</th><th>备注</th><th>设置人</th><th>时间</th><th></th></tr></thead>
+      <tbody>
+        {% for e in extras %}
+        <tr>
+          <td>{{ e.name }}</td>
+          <td>{{ e.dept or "—" }}</td>
+          <td class="num">{{ e.extra|num }}</td>
+          <td>{{ e.note or "—" }}</td>
+          <td>{{ e.by or "—" }}</td>
+          <td class="nowrap">{{ e.updated_at|ts }}</td>
+          <td>
+            <form method="post" action="/quota" class="inline" data-confirm="把「{{ e.name }}」的追加额度改回一般的 {{ topup.extra|num }} 点？" data-confirm-text="改回">
+              <input type="hidden" name="action" value="extra_delete" /><input type="hidden" name="target" value="{{ e.open_id }}" />
+              <button type="submit" class="btn small">改回一般的</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有单独设置追加额度的人，大家都按一般的 {{ topup.extra|num }} 点算。</p>
   {% endif %}
 </section>
 

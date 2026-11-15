@@ -14,6 +14,8 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from .access import ADMIN, REGULAR, ROLE_LABELS, ROLE_NOTES
+from .alerts import CHECK_MINUTES as ALERT_MINUTES
+from .alerts import SEND_HOURS as ALERT_HOURS
 from .core import Ctx
 from .db import dumps, loads
 from .feishu import CST, FeishuError
@@ -107,20 +109,46 @@ def register(app: FastAPI, c: Ctx) -> None:
         month_end = (month.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
         # 每人每月基础额度：默认看本月，?month=2026-10 看别的月
         rng = c.pick_range(request)
+        extras = [
+            {**e, "name": c.directory.user_name(e["open_id"]), "dept": c.directory.dept_path(c.directory.user_dept(e["open_id"])),
+             "by": c.directory.user_name(e["updated_by"]) if e["updated_by"] else ""}
+            for e in c.config.extras()
+        ]  # fmt: skip
         return c.page(
             "quota.html", viewer, "quota", request, rows=rows, summary=c.quotas.summary(rows), dimensions=DIMENSIONS,
             editing=c.quotas.get(edit) if edit else None, default_start=month.isoformat(), default_end=month_end.isoformat(), price=c.config.point_price,
             per_member=c.config.monthly_allowance, allowance=c.analytics.allowance(c.allowance_month(rng), limit=200), rng=rng,
+            topup=c.config.get("allowance"), extras=extras,
         )  # fmt: skip
 
     @app.post("/quota")
     def quota_post(
         request: Request, action: str = Form(...), id: int = Form(0), dimension: str = Form("department"), target: str = Form(""),
         amount: str = Form(""), period_start: str = Form(""), period_end: str = Form(""), note: str = Form(""), per_member: str = Form(""),
+        extra: str = Form(""), topped_at: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
             return bad
+        back = ("回到额度分配", "/quota")
+        if action == "topup":
+            try:
+                saved = c.config.save("allowance", {"extra": extra, "topped_at": topped_at}, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, "追加额度设置没有保存", str(e), back, "quota")
+            c.db.audit(viewer.open_id, "config", f"追加额度：一般每人 {saved['extra']:g} 点，用量超过 {saved['topped_at']:g} 点算已追加")
+            return c.done("/quota#extras", "saved")
+        if action == "extra_set":
+            try:
+                value = c.config.set_extra(target.strip(), amount, note, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, "个别人的追加额度没有保存", str(e), back, "quota")
+            c.db.audit(viewer.open_id, "config", f"{c.directory.user_name(target.strip())} 的追加额度：{value:g} 点")
+            return c.done("/quota#extras", "saved")
+        if action == "extra_delete":
+            c.config.delete_extra(target)
+            c.db.audit(viewer.open_id, "config", f"{c.directory.user_name(target)} 的追加额度改回一般的")
+            return c.done("/quota#extras", "saved")
         if action == "allowance":
             try:
                 saved = c.config.save("allowance", {"per_member": per_member}, viewer.open_id)
@@ -404,20 +432,45 @@ def register(app: FastAPI, c: Ctx) -> None:
             {"key": k, "name": name, "cfg": c.config.get(f"report_{k}"), "period": c.report.period(k), "handled": c.report.handled(k, datetime.now(CST))}
             for k, name in REPORT_KINDS.items()
         ]  # fmt: skip
+        now = datetime.now(CST)
+        alert = {
+            "cfg": c.config.get("quota_alert"), "levels": c.alerts.levels(now), "records": c.alerts.records(), "waiting": len(c.alerts.waiting(now)),
+            "hours": ALERT_HOURS, "minutes": ALERT_MINUTES, "allowance": c.config.get("allowance"), "special": len(c.config.extras()),
+        }  # fmt: skip
         return c.page(
             "reports.html", viewer, "reports", request, kinds=kinds, scope=c.config.get("report")["scope"], runs=c.report.runs(), weekdays=WEEKDAYS,
-            leaders=len(c.directory.leaders()), allowance=c.config.monthly_allowance,
+            leaders=len(c.directory.leaders()), allowance=c.config.monthly_allowance, alert=alert,
         )  # fmt: skip
 
     @app.post("/reports")
     def reports_post(
         request: Request, action: str = Form(...), kind: str = Form(""), enabled: str = Form(""), hour: str = Form(""),
-        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""),
+        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""), thresholds: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
             return bad
         back = ("回到报表发送", "/reports")
+        if action == "alert_save":
+            try:
+                saved = c.alerts.save({"enabled": enabled == "1", "thresholds": thresholds}, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, "额度告警设置没有保存", str(e), back, "reports")
+            levels = "、".join(f"{t}%" for t in saved["thresholds"])
+            note = f"（开启前已超过档位的 {saved['baseline']} 人这次不提醒）" if saved["baseline"] else ""
+            c.db.audit(viewer.open_id, "report", f"额度告警：{'开启' if saved['enabled'] else '关闭'}，档位 {levels}{note}")
+            return c.done("/reports#alerts", "alert_baseline" if saved["baseline"] else "alert_saved")
+        if action == "alert_test":
+            sent = c.alerts.test_send(viewer.open_id)
+            c.db.audit(viewer.open_id, "report", f"额度提醒测试发送给自己：{sent['status']}")
+            if sent["status"] != "sent":
+                return oops(viewer, "额度提醒没有发出去", sent["error"] or "发送失败。请确认应用已开启机器人能力，并开通 im:message:send_as_bot 权限。", back, "reports")
+            return c.done("/reports#alerts", "alert_test")
+        if action == "alert_catch_up":
+            waiting = len(c.alerts.waiting(datetime.now(CST)))
+            threading.Thread(target=c.alerts.catch_up, args=(datetime.now(CST),), name="quota-alerts-catch-up", daemon=True).start()
+            c.db.audit(viewer.open_id, "report", f"额度告警：给开启前已超过档位的 {waiting} 人补发当前档位")
+            return c.done("/reports#alerts", "alert_catch_up")
         if action == "scope":
             try:
                 saved = c.config.save("report", {"scope": scope}, viewer.open_id)

@@ -114,10 +114,32 @@ def test_monthly_allowance_line(env):
     report = env.ctx.report
     period = report.period("daily")
     data = report.build(period)
-    text = text_of(report.card(period, "ou_bob", report.personal(data, "ou_bob"), []))
+    card = report.card(period, "ou_bob", report.personal(data, "ou_bob"), [])
     used = data["month_used"]["ou_bob"]  # 这个月 1 日到昨天
     end = date.fromisoformat(period["end"])
-    assert f"📊 截止到 {end.month:02d}/{end.day:02d} 基础额度：已用 **" in text and "/ 20 点" in text and ("已用完" in text if used >= 20 else "剩余" in text)
+    # 紧跟在「个人用量」标题下面：小标题 + 和「消耗点数」那排一样的一排指标；再下面是这一期的用量（也有小标题）
+    els = card["elements"]
+    assert els[1]["content"] == "**👤 个人用量**"
+    assert els[2]["content"] == f"**📊 {end.month} 月额度**　<font color='grey'>截止到 {end.month:02d}/{end.day:02d}</font>"
+    rest = ("剩余", points(20 - used)) if used < 20 else ("超出", points(used - 20))
+    assert stat_row(els[3]) == [("已用", points(used)), ("基础额度", "20"), ("已用比例", f"{used / 20 * 100:.0f}%"), rest]
+    assert els[4]["content"].startswith("**📈 昨天用量**") and stat_row(els[5])[0][0] == "消耗点数"
+    # 用量超过「算作已追加的用量」：列出这个人的追加额度（个别人单独设置的按他的算）
+    env.ctx.config.save("allowance", {"topped_at": "25"}, "ou_admin")
+    env.ctx.config.set_extra("ou_bob", "10", "", "ou_admin")
+    row = report.card(period, "ou_bob", report.personal(data, "ou_bob"), [])["elements"][3]
+    assert [label for label, _ in stat_row(row)] == ["已用", "基础额度", "追加额度", "已用比例", "剩余" if used < 30 else "超出"] and stat_row(row)[2] == ("追加额度", "10")
+
+
+def test_allowance_row_counts_base_plus_top_up_after_3000_points():
+    """用量超过 3000 点（可改）就当作已经追加过：列出追加额度，已用比例和剩余 / 超出按「基础 + 追加」合计算。"""
+    from aius_server.report import allowance_stats
+
+    assert stat_row(allowance_stats(1650, 2000, 2000, 3000)) == [("本月已用", "1,650"), ("基础额度", "2,000"), ("已用比例", "82%"), ("剩余", "350")]
+    assert stat_row(allowance_stats(2500, 2000, 2000, 3000)) == [("本月已用", "2,500"), ("基础额度", "2,000"), ("已用比例", "125%"), ("超出", "500")]
+    row = allowance_stats(3500, 2000, 2000, 3000)  # 3500 / 4000 = 88%
+    assert row["flex_mode"] == "trisect" and stat_row(row) == [("本月已用", "3,500"), ("基础额度", "2,000"), ("追加额度", "2,000"), ("已用比例", "88%"), ("剩余", "500")]
+    assert stat_row(allowance_stats(4100, 2000, 2000, 3000))[-2:] == [("已用比例", "102%"), ("超出", "100")]
 
 
 def test_push_scope_and_test_send(env):

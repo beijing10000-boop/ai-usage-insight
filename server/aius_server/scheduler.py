@@ -21,11 +21,12 @@ log = logging.getLogger("aius")
 
 
 class Scheduler:
-    def __init__(self, db: Database, config: Config, engine: SyncEngine, report: UsageReports, interval: int = 60):
+    def __init__(self, db: Database, config: Config, engine: SyncEngine, report: UsageReports, interval: int = 60, alerts=None):
         self.db = db
         self.config = config
         self.engine = engine
         self.report = report
+        self.alerts = alerts
         self.interval = interval
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -37,6 +38,8 @@ class Scheduler:
         self._daily_sync(now)
         self._live_sync(now)
         self.report.tick(now)
+        if self.alerts:
+            self.alerts.tick(now)
 
     def _live_sync(self, now: datetime) -> None:
         cfg = self.config.get("sync")
