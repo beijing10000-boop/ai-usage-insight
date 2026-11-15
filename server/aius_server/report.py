@@ -103,12 +103,13 @@ def _stats(items: list[tuple[str, str]]) -> dict:
     }  # fmt: skip
 
 
-def allowance_stats(used: float, per: float, extra: float, topped_at: float, used_label: str = "本月已用") -> dict:
+def allowance_stats(used: float, per: float, extra: float, topped_at: float, used_label: str = "本月已用", force_total: bool = False) -> dict:
     """这个月的额度用到了哪儿，和「消耗点数」那排一样的样式。周报、月报和额度提醒共用。
 
-    用量超过 topped_at（默认 3000 点）就当作已经追加过额度：把追加额度也列出来，已用比例和剩余 / 超出都按「基础 + 追加」合计算
-    （比如合计 4000 点、用了 3500 点，已用比例就是 3500 / 4000 = 88%）；没超过就只和基础额度比。"""
-    if extra > 0 and used > topped_at:
+    用量超过 topped_at（默认 3000 点）就当作已经追加过额度：把追加额度（这个人的，一般 2000 点）也列出来，已用比例和剩余 / 超出
+    都按「基础 + 追加」合计算（比如合计 4000 点、用了 3500 点，已用比例就是 3500 / 4000 = 88%）；没超过就只和基础额度比。
+    force_total：按合计提醒的额度提醒，不管有没有超过 topped_at 都按合计列。"""
+    if extra > 0 and (force_total or used > topped_at):
         total = per + extra
         rest = ("剩余", points(total - used)) if used < total else ("超出", points(used - total))
         return _stats([(used_label, points(used)), ("基础额度", points(per)), ("追加额度", points(extra)), ("已用比例", f"{used / total * 100:.0f}%"), rest])
@@ -257,10 +258,9 @@ class UsageReports:
         # 个人用量：标题下面先是这个月的额度用到了哪儿（一排指标），再是这一期的点数、金额、次数（周报月报再加天数），最后是常用场景
         elements.append(_md("**👤 个人用量**"))
         if per:
-            quota = self.config.get("quota_alert")
             elements.append(_md(f"**📊 {end.month} 月额度**　<font color='grey'>截止到 {short(end)}</font>"))
-            # 小标题已经写了是几月的额度（月报是上个月），所以这里叫「已用」不叫「本月已用」
-            elements.append(allowance_stats(me["month_used"], per, float(quota["extra"]), float(quota["topped_at"]), used_label="已用"))
+            # 小标题已经写了是几月的额度（月报是上个月），所以这里叫「已用」不叫「本月已用」；追加额度按这个人的算
+            elements.append(allowance_stats(me["month_used"], per, self.config.extra_for(open_id), self.config.topped_at, used_label="已用"))
         if me["amount"] > 0:
             stats = [("消耗点数", points(me["amount"])), ("消耗金额", money(me["amount"] * price)), ("使用次数", f"{me['records']:,}")]
             if kind != "daily":

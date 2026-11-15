@@ -209,16 +209,26 @@ CREATE TABLE IF NOT EXISTS app_owners (
     created     TEXT NOT NULL DEFAULT '',      -- 应用创建时间（Aily 给的 YYYY-MM-DD HH:MM:SS）
     updated_at  INTEGER NOT NULL
 );
--- 额度告警（v7）：每人每月每个档位一行，发过（或者不用发）的就不再发
+-- 额度告警（v7）：每人每月每个档位一行，发过（或者不用发）的就不再发。
+-- 档位 level：base:80 = 基础额度的 80%；total:80 = 基础 + 追加合计的 80%（追加过额度的人才有）
 CREATE TABLE IF NOT EXISTS quota_alerts (
     month       TEXT NOT NULL,                 -- YYYY-MM
     open_id     TEXT NOT NULL,
-    threshold   INTEGER NOT NULL,              -- 档位：基础额度的百分之几
+    level       TEXT NOT NULL,
+    line        REAL NOT NULL,                 -- 这个档位是多少点
     used        REAL NOT NULL,                 -- 这个月当时已用的点数
     status      TEXT NOT NULL,                 -- sending | sent | failed | covered（同时跨过了更高的档位）| baseline（开启前已超过）
     error       TEXT NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL,
-    PRIMARY KEY (month, open_id, threshold)
+    PRIMARY KEY (month, open_id, level)
+);
+-- 个别人的追加额度（v7）：一般每人追加 allowance.extra 点，不一样的记在这里
+CREATE TABLE IF NOT EXISTS quota_extras (
+    open_id     TEXT PRIMARY KEY,
+    extra       REAL NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    updated_by  TEXT NOT NULL DEFAULT '',
+    updated_at  INTEGER NOT NULL
 );
 -- 额度分配：给部门 / 人员 / 应用在一个周期里分配的点数
 CREATE TABLE IF NOT EXISTS quota_allocations (

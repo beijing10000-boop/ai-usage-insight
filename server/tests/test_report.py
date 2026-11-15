@@ -124,6 +124,11 @@ def test_monthly_allowance_line(env):
     rest = ("剩余", points(20 - used)) if used < 20 else ("超出", points(used - 20))
     assert stat_row(els[3]) == [("已用", points(used)), ("基础额度", "20"), ("已用比例", f"{used / 20 * 100:.0f}%"), rest]
     assert els[4]["content"].startswith("**📈 昨天用量**") and stat_row(els[5])[0][0] == "消耗点数"
+    # 用量超过「算作已追加的用量」：列出这个人的追加额度（个别人单独设置的按他的算）
+    env.ctx.config.save("allowance", {"topped_at": "25"}, "ou_admin")
+    env.ctx.config.set_extra("ou_bob", "10", "", "ou_admin")
+    row = report.card(period, "ou_bob", report.personal(data, "ou_bob"), [])["elements"][3]
+    assert [label for label, _ in stat_row(row)] == ["已用", "基础额度", "追加额度", "已用比例", "剩余" if used < 30 else "超出"] and stat_row(row)[2] == ("追加额度", "10")
 
 
 def test_allowance_row_counts_base_plus_top_up_after_3000_points():

@@ -1,11 +1,11 @@
-"""额度告警：每个人这个月的用量到了每人每月基础额度的 80%、100%、180%、200%（档位可以改）时，用应用机器人给他本人发一张飞书卡片提醒。
+"""额度告警：每个人这个月的用量到了基础额度的 80%、100%（档位可以改）时，用应用机器人给他本人发一张飞书卡片提醒；
+追加过额度的人（这个月用量超过 3000 点，见「额度分配」），再按「基础 + 追加」合计的 80%、100% 提醒一轮
+（一般每人追加 2000 点，合计 4000 点，就是 3200 点和 4000 点；个别人追加得不一样的，在「额度分配」里单独设置）。
 
-- 卡片上的额度那一排和周报、月报一样（report.allowance_stats）：用量超过 3000 点（可改）就当作已经追加过额度，
-  列出追加额度，已用比例按「基础 + 追加」合计算。
-- 看的是这个月 1 日到现在的个人用量（当天的靠当天增量同步，每 10 分钟更新），和「额度分配」里的每人每月基础额度比。
-- 每个人每个月每个档位只提醒一次；两次检查之间一下跨过好几个档位（比如从 75% 涨到 105%），只发最高的那个，低的记成「已覆盖」。
+- 看的是这个月 1 日到现在的个人用量（当天的靠当天增量同步，每 10 分钟更新）。
+- 卡片上的额度那一排和周报、月报一样（report.allowance_stats）：追加过的把追加额度列出来，已用比例按「基础 + 追加」合计算。
+- 每个人每个月每个档位只提醒一次；两次检查之间一下跨过好几个档位，只发最高的那个，低的记成「已覆盖」。每月 1 日从头算。
 - 打开开关、改档位时，已经超过的档位不补发，只提醒之后新跨过的（记成「开启前已超过」）；需要的话可以在页面上给这些人补发一次。
-  每月 1 日从头算。
 - 只在 SEND_HOURS 之间发；夜里跨过的，第二天早上发那时最高的档位。每 CHECK_MINUTES 分钟看一次；有同步任务在整批替换数据时先不看。
 """
 
@@ -21,13 +21,33 @@ from .db import Database
 from .directory import Directory
 from .feishu import CST, FeishuError
 from .prefs import Config
-from .report import SEND_GAP, TOP_SCENES, _md, allowance_stats, scene, scene_lines
+from .report import SEND_GAP, TOP_SCENES, _md, allowance_stats, points, scene, scene_lines
 
 log = logging.getLogger("aius")
 
 CHECK_MINUTES = 10
 SEND_HOURS = (9, 21)  # 9:00 到 20:59 之间发
 STATUS = {"sending": "发送中", "sent": "已提醒", "failed": "发送失败", "covered": "已覆盖（同时跨过了更高的档位）", "baseline": "开启前已超过"}
+
+
+def level_name(level: str) -> str:
+    """base:80 → 基础 80%；total:100 → 基础 + 追加 100%。"""
+    scope, _, pct = level.partition(":")
+    return f"{'基础' if scope == 'base' else '基础 + 追加'} {pct}%"
+
+
+def plan_levels(per: float, extra: float, topped_at: float, thresholds: list[int]) -> list[dict]:
+    """一个人这个月的提醒档位，按点数从低到高：先是基础额度的各个百分比；再是「基础 + 追加」合计的各个百分比，
+    只算比基础额度多、也超过「算作已追加的用量」的那些（没到那么多，就不当作追加过）。"""
+    if not per:
+        return []
+    total = per + extra
+    out = [{"level": f"base:{t}", "scope": "base", "pct": t, "line": per * t / 100, "total": per} for t in thresholds]
+    out += [
+        {"level": f"total:{t}", "scope": "total", "pct": t, "line": total * t / 100, "total": total}
+        for t in thresholds if total * t / 100 > max(per, topped_at)
+    ]  # fmt: skip
+    return sorted(out, key=lambda lv: lv["line"])
 
 
 class QuotaAlerts:
@@ -60,43 +80,46 @@ class QuotaAlerts:
     def thresholds(self) -> list[int]:
         return list(self.config.get("quota_alert")["thresholds"])
 
-    def crossed(self, used: float) -> list[int]:
-        """用了这么多点，跨过了哪些档位（从低到高）。没设每人每月基础额度时一个都不算。"""
-        per = self.config.monthly_allowance
-        return [t for t in self.thresholds() if per and used >= per * t / 100]
+    def planner(self):
+        """open_id → 他的提醒档位。设置和个别人的追加额度一次读好（每次检查要算几百个人）。"""
+        allowance = self.config.get("allowance")
+        per, extra, topped = float(allowance["per_member"] or 0), float(allowance["extra"]), float(allowance["topped_at"])
+        special = {r["open_id"]: float(r["extra"]) for r in self.config.extras()}
+        thresholds = self.thresholds()
+        return lambda open_id: plan_levels(per, special.get(open_id, extra), topped, thresholds)
 
     def levels(self, now: datetime) -> list[dict]:
-        """页面上看：这个月到了每个档位的各有多少人。"""
-        usage = self.usage(self.month_of(now))
-        per = self.config.monthly_allowance
-        return [{"threshold": t, "people": sum(1 for v in usage.values() if per and v >= per * t / 100)} for t in self.thresholds()]
+        """页面上看：这个月到了每个档位的各有多少人（档位的点数按一般的追加额度写）。"""
+        plan = self.planner()
+        counts: dict[str, int] = {}
+        for oid, used in self.usage(self.month_of(now)).items():
+            for lv in plan(oid):
+                if used >= lv["line"]:
+                    counts[lv["level"]] = counts.get(lv["level"], 0) + 1
+        return [{"level": lv["level"], "name": level_name(lv["level"]), "line": lv["line"], "people": counts.get(lv["level"], 0)} for lv in plan("")]
 
-    def _done(self, month: str) -> tuple[set[tuple[str, int]], dict[str, int]]:
-        rows = self.db.q("SELECT open_id, threshold FROM quota_alerts WHERE month=?", (month,))
-        done = {(r[0], r[1]) for r in rows}
-        top: dict[str, int] = {}
-        for oid, t in done:
-            top[oid] = max(top.get(oid, 0), t)
-        return done, top
-
-    def pending(self, now: datetime) -> list[tuple[str, float, int, list[int]]]:
+    def pending(self, now: datetime) -> list[tuple[str, float, dict, list[dict]]]:
         """现在要提醒的人：(open_id, 这个月已用, 要提醒的档位 = 跨过的最高档位, 这次新跨过的档位)。"""
         month = self.month_of(now)
-        done, top_done = self._done(month)
+        done: dict[str, set[str]] = {}
+        for r in self.db.q("SELECT open_id, level FROM quota_alerts WHERE month=?", (month,)):
+            done.setdefault(r[0], set()).add(r[1])
+        plan = self.planner()
         out = []
         for oid, used in sorted(self.usage(month).items(), key=lambda kv: -kv[1]):
-            hit = self.crossed(used)
-            if not hit or top_done.get(oid, 0) >= hit[-1]:
+            levels = plan(oid)
+            hit = [lv for lv in levels if used >= lv["line"]]  # 从低到高，是 levels 的前几个
+            mine = done.get(oid, set())
+            reached = max((i for i, lv in enumerate(levels) if lv["level"] in mine), default=-1)
+            if not hit or reached >= len(hit) - 1:
                 continue
-            new = [t for t in hit if t > top_done.get(oid, 0) and (oid, t) not in done]
-            out.append((oid, used, hit[-1], new))
+            out.append((oid, used, hit[-1], [lv for i, lv in enumerate(hit) if i > reached and lv["level"] not in mine]))
         return out
 
     # ---------- 检查和发送 ----------
     def tick(self, now: datetime) -> bool:
         """调度每分钟调一次：开着、在发送时段里、离上次检查满 CHECK_MINUTES 分钟、没有同步任务在整批替换数据，就在后台检查一次。"""
-        cfg = self.config.get("quota_alert")
-        if not cfg["enabled"] or not self.config.monthly_allowance or not SEND_HOURS[0] <= now.hour < SEND_HOURS[1]:
+        if not self.config.get("quota_alert")["enabled"] or not self.config.monthly_allowance or not SEND_HOURS[0] <= now.hour < SEND_HOURS[1]:
             return False
         if now.timestamp() - self._last < CHECK_MINUTES * 60 - 30 or self._lock.locked() or (self.engine and self.engine.active()):
             return False
@@ -114,24 +137,24 @@ class QuotaAlerts:
             stamp = int(time.time())
             with self.db.tx() as c:
                 for oid, used, top, new in todo:
-                    for t in new:
+                    for lv in new:
                         c.execute(
-                            "INSERT OR IGNORE INTO quota_alerts(month, open_id, threshold, used, status, created_at) VALUES(?,?,?,?,?,?)",
-                            (month, oid, t, round(used, 2), "sending" if t == top else "covered", stamp),
+                            "INSERT OR IGNORE INTO quota_alerts(month, open_id, level, line, used, status, created_at) VALUES(?,?,?,?,?,?,?)",
+                            (month, oid, lv["level"], lv["line"], round(used, 2), "sending" if lv is top else "covered", stamp),
                         )
             return [self._send(month, oid, used, top, now) for oid, used, top, _new in todo]
 
-    def _send(self, month: str, open_id: str, used: float, threshold: int, now: datetime, record: bool = True) -> dict:
+    def _send(self, month: str, open_id: str, used: float, level: dict, now: datetime, record: bool = True) -> dict:
         status, error = "sent", ""
         try:
-            self.feishu.send_card(open_id, self.card(open_id, used, threshold, now))
+            self.feishu.send_card(open_id, self.card(open_id, used, level, now))
         except FeishuError as e:
             status, error = "failed", str(e)[:300]
-            log.warning("额度提醒发送失败 %s %s%%：%s", open_id, threshold, e)
+            log.warning("额度提醒发送失败 %s %s：%s", open_id, level["level"], e)
         if record:
-            self.db.x("UPDATE quota_alerts SET status=?, error=?, used=? WHERE month=? AND open_id=? AND threshold=?", (status, error, round(used, 2), month, open_id, threshold))
+            self.db.x("UPDATE quota_alerts SET status=?, error=?, used=? WHERE month=? AND open_id=? AND level=?", (status, error, round(used, 2), month, open_id, level["level"]))
         self.sleep(SEND_GAP)
-        return {"open_id": open_id, "threshold": threshold, "used": used, "status": status, "error": error}
+        return {"open_id": open_id, "level": level["level"], "used": used, "status": status, "error": error}
 
     # ---------- 开关 ----------
     def save(self, patch: dict, actor: str, now: datetime | None = None) -> dict:
@@ -146,46 +169,57 @@ class QuotaAlerts:
 
     def baseline(self, now: datetime) -> int:
         month = self.month_of(now)
+        plan = self.planner()
         stamp = int(time.time())
         people = 0
         with self.db.tx() as c:
             for oid, used in self.usage(month).items():
-                hit = self.crossed(used)
+                hit = [lv for lv in plan(oid) if used >= lv["line"]]
                 people += bool(hit)
-                for t in hit:
+                for lv in hit:
                     c.execute(
-                        "INSERT OR IGNORE INTO quota_alerts(month, open_id, threshold, used, status, created_at) VALUES(?,?,?,?,'baseline',?)",
-                        (month, oid, t, round(used, 2), stamp),
+                        "INSERT OR IGNORE INTO quota_alerts(month, open_id, level, line, used, status, created_at) VALUES(?,?,?,?,?,'baseline',?)",
+                        (month, oid, lv["level"], lv["line"], round(used, 2), stamp),
                     )
         return people
 
-    def waiting(self, now: datetime) -> dict[str, int]:
+    def waiting(self, now: datetime) -> dict[str, str]:
         """开启前就已经超过档位、这个月还没收到过提醒的人 → 他们最高的那个档位。"""
         month = self.month_of(now)
-        rows = self.db.q(
-            "SELECT open_id, MAX(threshold) FROM quota_alerts WHERE month=? AND status='baseline' "
-            "AND open_id NOT IN (SELECT open_id FROM quota_alerts WHERE month=? AND status IN ('sent','sending','failed')) GROUP BY open_id",
+        out: dict[str, tuple[float, str]] = {}
+        for r in self.db.q(
+            "SELECT open_id, level, line FROM quota_alerts WHERE month=? AND status='baseline' "
+            "AND open_id NOT IN (SELECT open_id FROM quota_alerts WHERE month=? AND status IN ('sent','sending','failed'))",
             (month, month),
-        )
-        return {r[0]: r[1] for r in rows}
+        ):
+            if r[0] not in out or r[2] > out[r[0]][0]:
+                out[r[0]] = (r[2], r[1])
+        return {oid: level for oid, (_line, level) in out.items()}
 
     def catch_up(self, now: datetime) -> list[dict]:
         """给开启前已经超过档位的人补发一次（每人只发他那时最高的档位）。"""
         with self._lock:
             month = self.month_of(now)
             usage = self.usage(month)
+            plan = self.planner()
             out = []
-            for oid, t in self.waiting(now).items():
-                self.db.x("UPDATE quota_alerts SET status='sending' WHERE month=? AND open_id=? AND threshold=?", (month, oid, t))
-                out.append(self._send(month, oid, usage.get(oid, 0.0), t, now))
+            for oid, key in self.waiting(now).items():
+                level = next((lv for lv in plan(oid) if lv["level"] == key), None)
+                if level is None:  # 设置改过，这个档位已经没有了
+                    continue
+                self.db.x("UPDATE quota_alerts SET status='sending' WHERE month=? AND open_id=? AND level=?", (month, oid, key))
+                out.append(self._send(month, oid, usage.get(oid, 0.0), level, now))
             return out
 
     def test_send(self, open_id: str, now: datetime | None = None) -> dict:
         """「测试发送给我」：按自己这个月的实际用量发一张（没跨过档位就按第一个档位发），不记录。"""
         now = now or datetime.now(CST)
         used = self.usage(self.month_of(now)).get(open_id, 0.0)
-        hit = self.crossed(used)
-        return self._send(self.month_of(now), open_id, used, hit[-1] if hit else self.thresholds()[0], now, record=False)
+        levels = self.planner()(open_id)
+        if not levels:
+            return {"open_id": open_id, "level": "", "used": used, "status": "failed", "error": "还没有设置每人每月基础额度"}
+        hit = [lv for lv in levels if used >= lv["line"]]
+        return self._send(self.month_of(now), open_id, used, hit[-1] if hit else levels[0], now, record=False)
 
     def recover(self) -> int:
         """服务启动时调：上次正在发、被重启打断的提醒记成发送失败（不自动重发，免得重复）。"""
@@ -193,19 +227,26 @@ class QuotaAlerts:
 
     # ---------- 页面 ----------
     def records(self, limit: int = 50) -> list[dict]:
-        rows = self.db.q("SELECT * FROM quota_alerts WHERE status IN ('sending','sent','failed') ORDER BY created_at DESC, threshold DESC LIMIT ?", (limit,))
-        return [{**dict(r), "name": self.directory.user_name(r["open_id"]), "status_name": STATUS.get(r["status"], r["status"])} for r in rows]
+        rows = self.db.q("SELECT * FROM quota_alerts WHERE status IN ('sending','sent','failed') ORDER BY created_at DESC, line DESC LIMIT ?", (limit,))
+        return [
+            {**dict(r), "name": self.directory.user_name(r["open_id"]), "level_name": level_name(r["level"]), "status_name": STATUS.get(r["status"], r["status"])}
+            for r in rows
+        ]  # fmt: skip
 
     # ---------- 卡片 ----------
-    def card(self, open_id: str, used: float, threshold: int, now: datetime) -> dict:
+    def card(self, open_id: str, used: float, level: dict, now: datetime) -> dict:
         per = self.config.monthly_allowance
-        quota = self.config.get("quota_alert")
         month = self.month_of(now)
         name = self.directory.user_name(open_id) if self.directory.user(open_id) else ""
-        intro = f"您 **{month_name(month)}** 的飞书/豆包 AI 用量已经达到基础额度的 **{threshold}%**。"
+        pct, total = level["pct"], level["total"]
+        if level["scope"] == "base":
+            reached = f"基础额度的 **{pct}%**"
+        else:
+            reached = f"基础额度和追加额度合计（{points(total)} 点）的 **{pct}%**"
+        intro = f"您 **{month_name(month)}** 的飞书/豆包 AI 用量已经达到{reached}。"
         elements: list[dict] = [_md(f"**{name}**，{intro}" if name else intro)]
-        # 额度那一排：用量超过 topped_at（默认 3000 点）就当作已经追加过，列出追加额度，已用比例按基础 + 追加合计算
-        elements.append(allowance_stats(used, per, float(quota["extra"]), float(quota["topped_at"])))
+        # 额度那一排：追加过的（按合计提醒的，或者用量超过「算作已追加的用量」）把追加额度列出来，已用比例按基础 + 追加合计算
+        elements.append(allowance_stats(used, per, self.config.extra_for(open_id), self.config.topped_at, force_total=level["scope"] == "total"))
         scenes: dict[str, float] = {}
         for r in self.db.q(
             "SELECT scenario, SUM(amount) FROM usage_agg WHERE subject='member' AND entity_id=? AND usage_date BETWEEN ? AND ? GROUP BY scenario",
@@ -220,9 +261,10 @@ class QuotaAlerts:
         elements.append({"tag": "action", "actions": [button]})
         note = f"统计时间：{now.month} 月 1 日 - {now.month} 月 {now.day} 日 {now:%H:%M}（当天的用量每 10 分钟更新一次）"
         elements.append({"tag": "note", "elements": [{"tag": "plain_text", "content": note}]})
-        color = "orange" if threshold < 100 else "red" if threshold < 200 else "carmine"
-        return {
-            "config": {"wide_screen_mode": True},
-            "header": {"template": color, "title": {"tag": "plain_text", "content": f"飞书/豆包 AI 额度提醒 ｜ 本月已用 {threshold}%"}},
-            "elements": elements,
-        }
+        if level["scope"] == "base":
+            color = "orange" if pct < 100 else "red"
+            title = f"飞书/豆包 AI 额度提醒 ｜ 本月已达 {pct}%"
+        else:
+            color = "red" if pct < 100 else "carmine"
+            title = f"飞书/豆包 AI 额度提醒 ｜ 本月已达 {pct}%（含追加额度）"
+        return {"config": {"wide_screen_mode": True}, "header": {"template": color, "title": {"tag": "plain_text", "content": title}}, "elements": elements}

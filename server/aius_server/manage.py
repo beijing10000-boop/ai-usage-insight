@@ -109,20 +109,46 @@ def register(app: FastAPI, c: Ctx) -> None:
         month_end = (month.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
         # 每人每月基础额度：默认看本月，?month=2026-10 看别的月
         rng = c.pick_range(request)
+        extras = [
+            {**e, "name": c.directory.user_name(e["open_id"]), "dept": c.directory.dept_path(c.directory.user_dept(e["open_id"])),
+             "by": c.directory.user_name(e["updated_by"]) if e["updated_by"] else ""}
+            for e in c.config.extras()
+        ]  # fmt: skip
         return c.page(
             "quota.html", viewer, "quota", request, rows=rows, summary=c.quotas.summary(rows), dimensions=DIMENSIONS,
             editing=c.quotas.get(edit) if edit else None, default_start=month.isoformat(), default_end=month_end.isoformat(), price=c.config.point_price,
             per_member=c.config.monthly_allowance, allowance=c.analytics.allowance(c.allowance_month(rng), limit=200), rng=rng,
+            topup=c.config.get("allowance"), extras=extras,
         )  # fmt: skip
 
     @app.post("/quota")
     def quota_post(
         request: Request, action: str = Form(...), id: int = Form(0), dimension: str = Form("department"), target: str = Form(""),
         amount: str = Form(""), period_start: str = Form(""), period_end: str = Form(""), note: str = Form(""), per_member: str = Form(""),
+        extra: str = Form(""), topped_at: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
             return bad
+        back = ("回到额度分配", "/quota")
+        if action == "topup":
+            try:
+                saved = c.config.save("allowance", {"extra": extra, "topped_at": topped_at}, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, "追加额度设置没有保存", str(e), back, "quota")
+            c.db.audit(viewer.open_id, "config", f"追加额度：一般每人 {saved['extra']:g} 点，用量超过 {saved['topped_at']:g} 点算已追加")
+            return c.done("/quota#extras", "saved")
+        if action == "extra_set":
+            try:
+                value = c.config.set_extra(target.strip(), amount, note, viewer.open_id)
+            except ConfigError as e:
+                return oops(viewer, "个别人的追加额度没有保存", str(e), back, "quota")
+            c.db.audit(viewer.open_id, "config", f"{c.directory.user_name(target.strip())} 的追加额度：{value:g} 点")
+            return c.done("/quota#extras", "saved")
+        if action == "extra_delete":
+            c.config.delete_extra(target)
+            c.db.audit(viewer.open_id, "config", f"{c.directory.user_name(target)} 的追加额度改回一般的")
+            return c.done("/quota#extras", "saved")
         if action == "allowance":
             try:
                 saved = c.config.save("allowance", {"per_member": per_member}, viewer.open_id)
@@ -409,7 +435,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         now = datetime.now(CST)
         alert = {
             "cfg": c.config.get("quota_alert"), "levels": c.alerts.levels(now), "records": c.alerts.records(), "waiting": len(c.alerts.waiting(now)),
-            "hours": ALERT_HOURS, "minutes": ALERT_MINUTES,
+            "hours": ALERT_HOURS, "minutes": ALERT_MINUTES, "allowance": c.config.get("allowance"), "special": len(c.config.extras()),
         }  # fmt: skip
         return c.page(
             "reports.html", viewer, "reports", request, kinds=kinds, scope=c.config.get("report")["scope"], runs=c.report.runs(), weekdays=WEEKDAYS,
@@ -419,8 +445,7 @@ def register(app: FastAPI, c: Ctx) -> None:
     @app.post("/reports")
     def reports_post(
         request: Request, action: str = Form(...), kind: str = Form(""), enabled: str = Form(""), hour: str = Form(""),
-        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""), thresholds: str = Form(""), extra: str = Form(""),
-        topped_at: str = Form(""),
+        weekday: str = Form(""), day: str = Form(""), scope: str = Form(""), thresholds: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
@@ -428,7 +453,7 @@ def register(app: FastAPI, c: Ctx) -> None:
         back = ("回到报表发送", "/reports")
         if action == "alert_save":
             try:
-                saved = c.alerts.save({"enabled": enabled == "1", "thresholds": thresholds, "extra": extra, "topped_at": topped_at}, viewer.open_id)
+                saved = c.alerts.save({"enabled": enabled == "1", "thresholds": thresholds}, viewer.open_id)
             except ConfigError as e:
                 return oops(viewer, "额度告警设置没有保存", str(e), back, "reports")
             levels = "、".join(f"{t}%" for t in saved["thresholds"])

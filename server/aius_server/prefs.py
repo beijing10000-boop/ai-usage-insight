@@ -14,8 +14,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "sync": {"enabled": False, "hour": 5, "range_days": 2, "live_minutes": 10, "last_auto_date": ""},
     # 点数折算费用：1 点 = point_price 元
     "pricing": {"point_price": 0.05},
-    # 每人每月的基础额度（点）：飞书的个人 AI 额度按自然月发放、每月 1 日重置。0 = 没有设置，页面上不显示月度额度
-    "allowance": {"per_member": 0},
+    # 每人每月的基础额度（点）：飞书的个人 AI 额度按自然月发放、每月 1 日重置。0 = 没有设置，页面上不显示月度额度。
+    # extra = 一般每人追加多少点（个别人不一样的记在 quota_extras 表里）；topped_at = 这个月用量超过多少点就当作已经追加过
+    # （平台拿不到谁追加了，只能这样推断）：额度那一排把追加额度列出来、比例按基础 + 追加合计算，额度提醒也按合计再提醒一轮
+    "allowance": {"per_member": 0, "extra": 2000, "topped_at": 3000},
     # 报表发送（日报 / 周报 / 月报，各自一个开关）。scope 三种报表共用：active（这一期有用量的人，部门负责人只要部门有用量也发）
     # | all（通讯录里所有人）。日报发昨天的；周报 weekday 1..7 = 周一..周日，发上一周；月报 day 1..28 号，发上个月
     # last_push_date：定时任务上次发送是哪天；last_period：最近一次全量发送（定时或手动）发的是哪一期（这一期的第一天），
@@ -24,9 +26,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "report_daily": {"enabled": False, "hour": 9, "last_push_date": "", "last_period": ""},
     "report_weekly": {"enabled": False, "weekday": 1, "hour": 9, "last_push_date": "", "last_period": ""},
     "report_monthly": {"enabled": False, "day": 1, "hour": 9, "last_push_date": "", "last_period": ""},
-    # 额度告警：这个月的个人用量到了每人每月基础额度的这些百分比时提醒本人。
-    # extra = 每次追加的额度（点）；topped_at = 这个月用量超过多少点就当作已经追加过：额度那一排（额度提醒、周报、月报）把基础额度和追加额度分开列
-    "quota_alert": {"enabled": False, "thresholds": [80, 100, 180, 200], "extra": 2000, "topped_at": 3000},
+    # 额度告警：这个月的个人用量到了基础额度的这些百分比时提醒本人；追加过额度的（见 allowance.topped_at），再按「基础 + 追加」的这些百分比提醒一轮
+    "quota_alert": {"enabled": False, "thresholds": [80, 100]},
 }
 
 
@@ -68,14 +69,26 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError("单价要大于 0")
         out["point_price"] = round(price, 6)
     elif key == "allowance":
-        raw = str(patch.get("per_member", "")).strip()
-        try:
-            value = float(raw) if raw else 0.0
-        except ValueError:
-            raise ConfigError("每人每月额度要填数字，不设置就留空") from None
-        if not 0 <= value <= 1e9:
-            raise ConfigError("每人每月额度不能是负数")
-        out["per_member"] = round(value, 2)
+        if "per_member" in patch:
+            raw = str(patch.get("per_member") or "").strip()
+            try:
+                value = float(raw) if raw else 0.0
+            except ValueError:
+                raise ConfigError("每人每月额度要填数字，不设置就留空") from None
+            if not 0 <= value <= 1e9:
+                raise ConfigError("每人每月额度不能是负数")
+            out["per_member"] = round(value, 2)
+        for field, what in (("extra", "默认追加额度"), ("topped_at", "算作已追加的用量")):
+            if field in patch:
+                raw = str(patch[field] or "").strip()
+                default = DEFAULTS["allowance"][field]
+                try:
+                    value = float(raw) if raw else float(default)  # 留空 = 默认值
+                except ValueError:
+                    raise ConfigError(f"{what}要填数字（点），留空就是默认的 {default} 点") from None
+                if not 0 <= value <= 1e9:
+                    raise ConfigError(f"{what}不能是负数")
+                out[field] = round(value, 2)
     elif key == "report":
         if "scope" in patch:
             if patch["scope"] not in ("active", "all"):
@@ -99,21 +112,10 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
             try:
                 values = sorted({int(float(str(x).strip())) for x in items if str(x).strip()})
             except ValueError:
-                raise ConfigError("告警档位要填数字，用逗号隔开，例如 80,100,180,200") from None
-            if not values or len(values) > 8 or values[0] < 1 or values[-1] > 1000:
-                raise ConfigError("告警档位要在 1 到 1000（%）之间，至少 1 个、最多 8 个")
+                raise ConfigError("告警档位要填数字，用逗号隔开，例如 80,100") from None
+            if not values or len(values) > 6 or values[0] < 1 or values[-1] > 100:
+                raise ConfigError("告警档位要在 1 到 100（%）之间，至少 1 个、最多 6 个")
             out["thresholds"] = values
-        for field, what in (("extra", "追加额度"), ("topped_at", "算作已追加的用量")):
-            if field in patch:
-                raw = str(patch[field] or "").strip()
-                default = DEFAULTS["quota_alert"][field]
-                try:
-                    value = float(raw) if raw else float(default)  # 留空 = 默认值
-                except ValueError:
-                    raise ConfigError(f"{what}要填数字（点），留空就是默认的 {default} 点") from None
-                if not 0 <= value <= 1e9:
-                    raise ConfigError(f"{what}不能是负数")
-                out[field] = round(value, 2)
     else:
         raise ConfigError("没有这个配置项")
     return out
@@ -155,3 +157,35 @@ class Config:
     @property
     def monthly_allowance(self) -> float:
         return float(self.get("allowance")["per_member"] or 0)
+
+    @property
+    def topped_at(self) -> float:
+        """这个月用量超过多少点就当作已经追加过额度。"""
+        return float(self.get("allowance")["topped_at"])
+
+    # ---------- 追加额度：一般每人一样（allowance.extra），个别人不一样的单独记 ----------
+    def extra_for(self, open_id: str) -> float:
+        special = self.db.val("SELECT extra FROM quota_extras WHERE open_id=?", (open_id,))
+        return float(special) if special is not None else float(self.get("allowance")["extra"])
+
+    def extras(self) -> list[dict]:
+        return [dict(r) for r in self.db.q("SELECT * FROM quota_extras ORDER BY updated_at DESC")]
+
+    def set_extra(self, open_id: str, extra: str, note: str, actor: str) -> float:
+        if not open_id:
+            raise ConfigError("请选一个人（在输入框里打名字，从下拉里选）")
+        try:
+            value = float(str(extra).strip())
+        except ValueError:
+            raise ConfigError("追加额度要填数字（点）") from None
+        if not 0 <= value <= 1e9:
+            raise ConfigError("追加额度不能是负数")
+        self.db.x(
+            "INSERT INTO quota_extras(open_id, extra, note, updated_by, updated_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(open_id) DO UPDATE SET extra=excluded.extra, note=excluded.note, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+            (open_id, round(value, 2), note.strip()[:100], actor, int(time.time())),
+        )
+        return round(value, 2)
+
+    def delete_extra(self, open_id: str) -> None:
+        self.db.x("DELETE FROM quota_extras WHERE open_id=?", (open_id,))

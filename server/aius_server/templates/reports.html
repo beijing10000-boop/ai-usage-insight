@@ -88,14 +88,14 @@
 {% set acfg = alert.cfg %}
 <section class="panel" id="alerts">
   <div class="section-head">
-    <div><h2>额度告警</h2><p>每个人这个月的用量到了每人每月基础额度{% if allowance %}（{{ allowance|num }} 点）{% endif %}的下面这些档位时，给他本人发一张飞书卡片提醒。
-      每个档位每月只提醒一次；一下跨过好几个档位只发最高的那个。这个月用量超过 {{ acfg.topped_at|num }} 点的就当作已经追加过额度（追加 {{ acfg.extra|num }} 点），
-      卡片上把追加额度也列出来，已用比例和剩余 / 超出按「基础 + 追加」合计算（周报、月报的额度那一排也一样）。
-      只在 {{ alert.hours[0] }}:00–{{ alert.hours[1] }}:00 之间发，每 {{ alert.minutes }} 分钟看一次（当天的用量靠当天增量同步，每 10 分钟更新）。</p></div>
+    <div><h2>额度告警</h2><p>每个人这个月的用量到了基础额度{% if allowance %}（{{ allowance|num }} 点）{% endif %}的下面这些百分比时，给他本人发一张飞书卡片提醒；
+      追加过额度的人（用量超过 {{ alert.allowance.topped_at|num }} 点），再按「基础 + 追加」合计（一般 {{ (allowance + alert.allowance.extra)|num }} 点）的这些百分比提醒一轮。
+      追加额度一般每人 {{ alert.allowance.extra|num }} 点{% if alert.special %}，{{ alert.special }} 人单独设置了{% endif %}，在「额度分配」里改。
+      每个档位每月只提醒一次；一下跨过好几个档位只发最高的那个。只在 {{ alert.hours[0] }}:00–{{ alert.hours[1] }}:00 之间发，每 {{ alert.minutes }} 分钟看一次（当天的用量靠当天增量同步，每 10 分钟更新）。</p></div>
     <span class="status {{ 'ok' if acfg.enabled else 'muted' }}">{{ "已开启" if acfg.enabled else "已关闭" }}</span>
   </div>
   {% if not allowance %}<p class="notice">还没有设置每人每月基础额度：先在「额度分配」里设置，额度告警才会生效。</p>{% endif %}
-  <p class="help">这个月现在：{% for l in alert.levels %}到 {{ l.threshold }}% 的 <b>{{ l.people }}</b> 人{{ "；" if not loop.last }}{% endfor %}。打开开关时已经超过档位的人不补发，等他们跨过下一个档位时再提醒。</p>
+  <p class="help">这个月现在：{% for l in alert.levels %}到{{ l.name }}（{{ l.line|num }} 点）的 <b>{{ l.people }}</b> 人{{ "；" if not loop.last }}{% endfor %}。打开开关时已经超过档位的人不补发，等他们跨过下一个档位时再提醒。</p>
   <form method="post" action="/reports">
     <input type="hidden" name="action" value="alert_save" />
     <div class="fields">
@@ -107,16 +107,8 @@
         </select>
       </div>
       <div>
-        <label for="alert-thresholds">告警档位（%，用逗号隔开）</label>
-        <input id="alert-thresholds" name="thresholds" value="{{ acfg.thresholds|join(',') }}" maxlength="60" />
-      </div>
-      <div>
-        <label for="alert-extra">追加额度（点，默认 2000）</label>
-        <input id="alert-extra" name="extra" value="{{ acfg.extra|num }}" inputmode="decimal" maxlength="12" />
-      </div>
-      <div>
-        <label for="alert-topped">用量超过多少点算已追加（点，默认 3000）</label>
-        <input id="alert-topped" name="topped_at" value="{{ acfg.topped_at|num }}" inputmode="decimal" maxlength="12" />
+        <label for="alert-thresholds">告警档位（%，用逗号隔开；基础和「基础 + 追加」都按这些提醒）</label>
+        <input id="alert-thresholds" name="thresholds" value="{{ acfg.thresholds|join(',') }}" maxlength="40" />
       </div>
     </div>
     <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>
@@ -137,13 +129,13 @@
   {% if alert.records %}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>时间</th><th>姓名</th><th class="num">档位</th><th class="num">当时已用（点）</th><th>结果</th><th>说明</th></tr></thead>
+      <thead><tr><th>时间</th><th>姓名</th><th>档位</th><th class="num">当时已用（点）</th><th>结果</th><th>说明</th></tr></thead>
       <tbody>
         {% for r in alert.records %}
         <tr>
           <td class="nowrap">{{ r.created_at|ts }}</td>
           <td>{{ r.name }}</td>
-          <td class="num">{{ r.threshold }}%</td>
+          <td class="nowrap">{{ r.level_name }}<small>{{ r.line|num }} 点</small></td>
           <td class="num">{{ r.used|num }}</td>
           <td><span class="status {{ {'sent': 'success', 'failed': 'failed', 'sending': 'running'}.get(r.status, 'muted') }}">{{ r.status_name }}</span></td>
           <td>{{ r.error }}</td>
