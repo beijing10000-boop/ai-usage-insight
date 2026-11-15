@@ -173,8 +173,10 @@ def test_alert_and_top_up_pages(env):
     assert c.post("/reports", data={"action": "alert_save", "enabled": "1", "thresholds": "abc"}).status_code == 400
     assert c.post("/reports", data={"action": "alert_test"}).headers["location"] == "/reports?done=alert_test#alerts"
     assert [oid for oid, _ in env.feishu.sent][-1] == "ou_admin"
-    # 额度分配页：一般追加多少、多少点算已追加、个别人的追加额度
-    assert "追加额度" in c.get("/quota").text
+    # 额度分配页：一般追加多少、多少点算已追加、个别人的追加额度。选人用和成员用量一样的找人框：框里显示姓名，open_id 在隐藏字段里
+    quota = c.get("/quota").text
+    assert "追加额度" in quota and 'data-member-pick="extra-who-value"' in quota and '<input type="hidden" id="extra-who-value" name="target" />' in quota
+    assert 'list="extra-who-list"' not in quota
     assert c.post("/quota", data={"action": "topup", "extra": "2500", "topped_at": "3200"}).status_code == 303
     assert env.ctx.config.get("allowance")["extra"] == 2500 and env.ctx.config.get("allowance")["topped_at"] == 3200
     assert c.post("/quota", data={"action": "extra_set", "target": "ou_bob", "amount": "5000", "note": "项目需要"}).status_code == 303
