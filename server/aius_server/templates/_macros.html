@@ -203,11 +203,12 @@
 
 {# 表单里选一个人：和成员用量的找人框一样边输入边列出匹配的人（姓名、英文名、邮箱任意一段，带部门和本月用量），
    选中后框里显示姓名，open_id 放在隐藏字段 name 里提交（app.js 的 data-member-pick）。没从列表里选就不让提交 #}
-{% macro member_pick(id, name, placeholder) %}
+{# value / shown：已经选好的人（open_id 和姓名），设置页回显用 #}
+{% macro member_pick(id, name, placeholder, value="", shown="") %}
 <div class="member-search member-pick">
-  <input id="{{ id }}" type="search" placeholder="{{ placeholder }}" autocomplete="off" required aria-label="选择人员"
+  <input id="{{ id }}" type="search" placeholder="{{ placeholder }}" autocomplete="off" required aria-label="选择人员" value="{{ shown }}"
     data-member-search data-member-pick="{{ id }}-value" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="{{ id }}-results" />
-  <input type="hidden" id="{{ id }}-value" name="{{ name }}" />
+  <input type="hidden" id="{{ id }}-value" name="{{ name }}" value="{{ value }}" />
   <ul id="{{ id }}-results" class="member-results" role="listbox" aria-label="匹配的人" hidden></ul>
 </div>
 {% endmacro %}

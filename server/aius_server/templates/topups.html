@@ -1,0 +1,137 @@
+{% extends "_base.html" %}
+{% from "_macros.html" import member_pick %}
+{% set title = "追加审批" %}
+{% set section = "运营" %}
+{% set mode_name = {"off": "已关闭", "preview": "只预览", "on": "自动处理中"}[cfg.mode] %}
+
+{% block actions %}
+<form method="post" action="/topups" class="inline">
+  <input type="hidden" name="action" value="run" />
+  <button type="submit" class="btn"{{ " disabled" if cfg.mode == "off" or missing }}>现在检查一次</button>
+</form>
+{% endblock %}
+
+{% block content %}
+<div class="page-intro">
+  <p>盯着一个飞书审批里申请 AI 额度的单子，以指定审批人的身份自动处理：到审批节点先核对（本月追加过没有、基础额度用完没有），没问题就填预估费用并同意；
+    到办理节点把使用人加进飞书用户组（额度由管理后台对这个用户组的限额规则决定）并办理。其他资源的申请单一律不碰。每分钟看一次。</p>
+</div>
+
+<section class="panel" id="settings">
+  <div class="section-head">
+    <div><h2>设置</h2><p>怎么认出是申请 AI 额度的：表单「类别」里含下面填的词，并且「资源名称」含「额度」和「豆包」或「AI」（不管空格）。
+      「只预览」时照样看单子、在下面列出每张会怎么处理，但不评论、不审批、不动用户组；看过没问题再切到「自动处理」。</p></div>
+    <span class="status {{ {'off': 'muted', 'preview': 'running', 'on': 'ok'}[cfg.mode] }}">{{ mode_name }}</span>
+  </div>
+  {% if missing and cfg.mode != "off" %}<p class="error" role="alert">还缺这些设置，暂时不会检查：{{ missing }}</p>{% endif %}
+  {% if state.error %}<p class="error" role="alert">上一轮检查出错：{{ state.error }}</p>{% endif %}
+  <form method="post" action="/topups">
+    <input type="hidden" name="action" value="save" />
+    <div class="fields">
+      <div>
+        <label for="t-mode">自动审批</label>
+        <select id="t-mode" name="mode">
+          <option value="off"{{ " selected" if cfg.mode == "off" }}>关闭</option>
+          <option value="preview"{{ " selected" if cfg.mode == "preview" }}>只预览（不操作）</option>
+          <option value="on"{{ " selected" if cfg.mode == "on" }}>自动处理</option>
+        </select>
+      </div>
+      <div>
+        <label for="t-code">审批编码（审批定义的 Approval Code）</label>
+        <input id="t-code" name="approval_code" value="{{ cfg.approval_code }}" maxlength="100" required />
+      </div>
+      <div>
+        <label for="t-approver">以谁的身份处理（只处理落在他名下的任务）</label>
+        {{ member_pick("t-approver", "approver", "输入姓名，从列表里选", cfg.approver, approver_name) }}
+      </div>
+      <div>
+        <label for="t-category">表单「类别」里含</label>
+        <input id="t-category" name="category" value="{{ cfg.category }}" maxlength="100" placeholder="例如 飞书/豆包" />
+      </div>
+      <div>
+        <label for="t-approve-node">审批节点的名称里含</label>
+        <input id="t-approve-node" name="approve_node" value="{{ cfg.approve_node }}" maxlength="100" required />
+      </div>
+      <div>
+        <label for="t-handle-node">办理节点的名称里含</label>
+        <input id="t-handle-node" name="handle_node" value="{{ cfg.handle_node }}" maxlength="100" required />
+      </div>
+      <div>
+        <label for="t-group">追加后加进哪个飞书用户组（名称）</label>
+        <input id="t-group" name="group" value="{{ cfg.group }}" maxlength="100" required />
+      </div>
+      <div>
+        <label for="t-points">每次追加（点）</label>
+        <input id="t-points" name="points" type="number" min="0" step="any" value="{{ '%g'|format(cfg.points) }}" required />
+      </div>
+      <div>
+        <label for="t-fee">预估费用（元）</label>
+        <input id="t-fee" name="fee" type="number" min="0" step="any" value="{{ '%g'|format(cfg.fee) }}" required />
+      </div>
+      <div>
+        <label for="t-used">这个月用到多少点算基础额度用完</label>
+        <input id="t-used" name="used_up" type="number" min="0" step="any" value="{{ '%g'|format(cfg.used_up) }}" required />
+      </div>
+    </div>
+    <div class="form-actions"><button type="submit" class="btn primary">保存</button></div>
+  </form>
+  <p class="help">上次检查：{{ state.at|ts("还没检查过") }}{% if state.at %}，审批中的单子 {{ state.pending }} 张{% endif %}。
+    每月 1 日自动把用户组清空（追加额度只在当月有效）{% if cfg.reset_month %}，上次清空 / 记录是 {{ cfg.reset_month }}{% endif %}；刚切到「自动处理」时不清。</p>
+</section>
+
+<section class="panel" id="texts">
+  <div class="section-head"><div><h2>自动写的文字</h2><p>都以审批人本人的身份发出，开头的「【自动处理】」用来和本人手写的区分。下面是按现在的设置写出来的样子（已用点数是举例）</p></div></div>
+  <div class="row-item"><div><strong>本月已经追加过 → 评论</strong><p>{{ texts.duplicate }}</p></div></div>
+  <div class="row-item"><div><strong>基础额度还没用完 → 评论（用完后自动继续）</strong><p>{{ texts.waiting }}</p></div></div>
+  <div class="row-item"><div><strong>正常 → 审批意见</strong><p>{{ texts.opinion }}</p></div></div>
+  <div class="row-item"><div><strong>正常 → 预估费用 {{ '%g'|format(cfg.fee) }}，费用说明</strong><p>{{ texts.fee_note }}</p></div></div>
+  <div class="row-item"><div><strong>办理 → 办理意见</strong><p>{{ texts.handled }}</p></div></div>
+</section>
+
+<section class="panel" id="records">
+  <div class="section-head"><div><h2>申请记录</h2><p>申请 AI 额度的单子，最新的在最上面（最多 200 张）；还没结束的 {{ open_count }} 张。{% if cfg.mode == "preview" %}现在是只预览：「会怎么处理」是打开自动处理后会做的事，还没做。{% endif %}</p></div></div>
+  {% if records %}
+  <div class="toolbar"><input type="search" data-filter-input="topup-table" placeholder="按姓名、部门、单号或状态筛选" aria-label="筛选申请记录" /></div>
+  <div class="table-wrap">
+    <table id="topup-table">
+      <thead><tr><th>提交时间</th><th>单号</th><th>申请人</th><th>使用人</th><th>部门</th><th>资源名称</th><th class="num">当月已用（点）</th><th>状态</th><th>说明</th></tr></thead>
+      <tbody>
+        {% for r in records %}
+        <tr>
+          <td class="nowrap">{{ r.submitted_at|ts }}</td>
+          <td class="nowrap"><a href="{{ r.link }}" target="_blank" rel="noopener noreferrer">{{ r.serial or "打开" }}</a></td>
+          <td>{{ r.applicant_name or "—" }}</td>
+          <td>{{ r.member_name or "—" }}</td>
+          <td>{{ r.dept or "—" }}</td>
+          <td>{{ r.resource }}<small title="{{ r.reason }}">{{ r.reason[:40] }}{{ "…" if r.reason|length > 40 }}</small></td>
+          <td class="num">{{ r.used|num if r.used is not none else "—" }}</td>
+          <td><span class="status {{ {'granted': 'success', 'approved': 'running', 'waiting': 'partial', 'duplicate': 'partial', 'manual': 'partial', 'error': 'failed', 'closed': 'muted'}.get(r.status, 'muted') }}">{{ r.status_name }}</span></td>
+          <td>{% if r.plan %}<b>会怎么处理：</b>{{ r.plan }}{% else %}{{ r.note or "—" }}{% endif %}{% if r.granted_at %}<small>{{ r.granted_at|ts }} 追加</small>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有看到申请 AI 额度的审批单。</p>
+  {% endif %}
+</section>
+
+<section class="panel" id="grants">
+  <div class="section-head"><div><h2>本月已追加</h2><p>{{ month[:4] }} 年 {{ month[5:]|int }} 月自动审批追加的人；周报、月报、额度提醒里他们的额度按「基础 + 追加」算</p></div></div>
+  {% if grants %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>姓名</th><th>部门</th><th class="num">追加（点）</th><th>时间</th></tr></thead>
+      <tbody>
+        {% for g in grants %}
+        <tr><td>{{ g.name }}</td><td>{{ g.dept or "—" }}</td><td class="num">{{ g.points|num }}</td><td class="nowrap">{{ g.created_at|ts }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">这个月还没有自动追加过。</p>
+  {% endif %}
+</section>
+{% endblock %}

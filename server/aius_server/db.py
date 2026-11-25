@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # 从 usage_logs 生成 usage_agg 的那条语句；{where} 是要汇总的范围（同步时是刚写入的那个「日期 × 主体」）
 AGG_INSERT = (
@@ -236,6 +236,36 @@ CREATE TABLE IF NOT EXISTS sent_cards (
 );
 CREATE INDEX IF NOT EXISTS idx_sent_cards_run ON sent_cards(run_id);
 CREATE INDEX IF NOT EXISTS idx_sent_cards_alert ON sent_cards(alert);
+-- 追加额度自动审批（v9）：盯着的那个审批里每张单一行。kind=other 的不是申请 AI 额度的，记下来只是为了不用每次都去读它
+CREATE TABLE IF NOT EXISTS topup_requests (
+    instance_code TEXT PRIMARY KEY,
+    serial       TEXT NOT NULL DEFAULT '',     -- 审批单号
+    kind         TEXT NOT NULL,                -- quota | other
+    applicant    TEXT NOT NULL DEFAULT '',     -- 申请人 open_id
+    member       TEXT NOT NULL DEFAULT '',     -- 给谁加（表单里的使用人）open_id；填了几个人的是空
+    resource     TEXT NOT NULL DEFAULT '',     -- 表单里的资源名称
+    reason       TEXT NOT NULL DEFAULT '',     -- 表单里的申请原因
+    submitted_at INTEGER NOT NULL DEFAULT 0,
+    month        TEXT NOT NULL DEFAULT '',     -- 检查的是哪个月的用量（YYYY-MM）
+    status       TEXT NOT NULL,                -- other | pending | waiting | duplicate | approved | granted | manual | error | closed
+    used         REAL,                         -- 检查时这个月已用的点数
+    note         TEXT NOT NULL DEFAULT '',     -- 处理结果的说明
+    plan         TEXT NOT NULL DEFAULT '',     -- 「只预览」时：如果打开自动处理会怎么做
+    commented    TEXT NOT NULL DEFAULT '',     -- 已经评论过的（duplicate:YYYY-MM / waiting:YYYY-MM），同一种一个月只评论一次
+    approved_at  INTEGER,
+    granted_at   INTEGER,
+    updated_at   INTEGER NOT NULL
+);
+-- 谁在哪个月追加了多少点（v9）：自动审批加的，周报、月报、额度提醒里这个人的额度按「基础 + 追加」算
+CREATE TABLE IF NOT EXISTS topups (
+    month         TEXT NOT NULL,               -- YYYY-MM
+    open_id       TEXT NOT NULL,
+    points        REAL NOT NULL,
+    source        TEXT NOT NULL,               -- approval（自动审批）
+    instance_code TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (month, open_id)
+);
 -- 个别人的追加额度（v7）：一般每人追加 allowance.extra 点，不一样的记在这里
 CREATE TABLE IF NOT EXISTS quota_extras (
     open_id     TEXT PRIMARY KEY,

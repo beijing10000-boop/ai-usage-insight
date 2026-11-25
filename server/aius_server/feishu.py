@@ -415,6 +415,85 @@ class FeishuClient:
         )
 
 
+    # ---------- 审批（追加额度自动审批用；要 approval:approval 权限）----------
+    def approval_definition(self, approval_code: str) -> dict:
+        """审批定义：名称、表单字段（form 是 JSON 字符串）、节点。"""
+        return self._api("GET", f"/open-apis/approval/v4/approvals/{quote(approval_code, safe='')}", "读取审批定义", params={"locale": "zh-CN"})
+
+    def approval_pending(self, approval_code: str, days: int = 60) -> list[str]:
+        """这个审批里还在审批中的单子（最近 days 天发起的）的实例编码。接口一次最多查 30 天，分段查。"""
+        out: list[str] = []
+        end = int(time.time() * 1000)
+        while days > 0:
+            span = min(days, 30)
+            start = end - span * 86400 * 1000
+            params: dict = {"page_size": 100, "user_id_type": "open_id"}
+            body = {"approval_code": approval_code, "instance_status": "PENDING", "instance_start_time_from": str(start), "instance_start_time_to": str(end), "locale": "zh-CN"}
+            while True:
+                data = self._api("POST", "/open-apis/approval/v4/instances/query", "查询审批单", params=params, body=body)
+                for it in data.get("instance_list") or []:
+                    code = (it.get("instance") or {}).get("code")
+                    if code and code not in out:
+                        out.append(code)
+                if not data.get("has_more") or not data.get("page_token"):
+                    break
+                params["page_token"] = data["page_token"]
+            end, days = start, days - span
+        return out
+
+    def approval_instance(self, instance_code: str) -> dict:
+        """一张审批单的详情：status、form（JSON 字符串）、task_list（每个节点的任务）、open_id（申请人）、serial_number……"""
+        return self._api("GET", f"/open-apis/approval/v4/instances/{quote(instance_code, safe='')}", "读取审批单", params={"user_id_type": "open_id"})
+
+    def approval_approve(self, approval_code: str, instance_code: str, task_id: str, open_id: str, comment: str, form: list[dict] | None = None) -> None:
+        """以 open_id 这个审批人的身份同意一个审批任务；form 是这个节点要填的字段。"""
+        body = {"approval_code": approval_code, "instance_code": instance_code, "task_id": task_id, "user_id": open_id, "comment": comment[:500]}
+        if form:
+            body["form"] = json.dumps(form, ensure_ascii=False)
+        self._api("POST", "/open-apis/approval/v4/tasks/approve", "同意审批任务", params={"user_id_type": "open_id"}, body=body)
+
+    def approval_comment(self, instance_code: str, open_id: str, text: str) -> None:
+        """以 open_id 这个人的身份在审批单下面评论。"""
+        self._api(
+            "POST",
+            f"/open-apis/approval/v4/instances/{quote(instance_code, safe='')}/comments",
+            "评论审批单",
+            params={"user_id_type": "open_id", "user_id": open_id},
+            body={"content": json.dumps({"text": text}, ensure_ascii=False)},
+        )
+
+    # ---------- 用户组（要 contact:group 权限）----------
+    def group_id(self, name: str) -> str:
+        """按名称找用户组，找不到返回空。"""
+        params: dict = {"page_size": 100, "type": 1}
+        while True:
+            data = self._api("GET", "/open-apis/contact/v3/group/simplelist", "读取用户组列表", params=params)
+            for g in data.get("grouplist") or []:
+                if g.get("name") == name:
+                    return str(g.get("id") or "")
+            if not data.get("has_more") or not data.get("page_token"):
+                return ""
+            params["page_token"] = data["page_token"]
+
+    def group_members(self, group_id: str) -> list[str]:
+        out: list[str] = []
+        params: dict = {"page_size": 100, "member_id_type": "open_id", "member_type": "user"}
+        while True:
+            data = self._api("GET", f"/open-apis/contact/v3/group/{quote(group_id, safe='')}/member/simplelist", "读取用户组成员", params=params)
+            out += [m["member_id"] for m in data.get("memberlist") or [] if m.get("member_id")]
+            if not data.get("has_more") or not data.get("page_token"):
+                return out
+            params["page_token"] = data["page_token"]
+
+    def group_add(self, group_id: str, open_id: str) -> None:
+        self._api("POST", f"/open-apis/contact/v3/group/{quote(group_id, safe='')}/member/add", "把人加进用户组",
+                  body={"member_type": "user", "member_id_type": "open_id", "member_id": open_id})  # fmt: skip
+
+    def group_remove(self, group_id: str, open_id: str) -> None:
+        self._api("POST", f"/open-apis/contact/v3/group/{quote(group_id, safe='')}/member/remove", "把人移出用户组",
+                  body={"member_type": "user", "member_id_type": "open_id", "member_id": open_id})  # fmt: skip
+
+
 def _leader(item: dict) -> str:
     """部门负责人的 open_id：先看 leader_user_id，没有再从 leaders 里找主负责人。"""
     if item.get("leader_user_id"):
@@ -529,6 +608,12 @@ class FakeFeishu:
         self.sent: list[tuple[str, dict]] = []
         self.send_error: FeishuError | None = None
         self.verify_error: FeishuError | None = None  # verify() 时抛出的错误（测试用）
+        # 审批和用户组（追加额度自动审批的测试用）
+        self.approval_form: list[dict] = []  # 审批定义里的表单字段
+        self.instances: dict[str, dict] = {}  # 实例编码 → 审批单详情；"_flow" 是后面还要走的节点 [(节点名, 审批人 open_id)]
+        self.groups: dict[str, set[str]] = {}  # 用户组名称 → 成员 open_id；组 ID 是 "g-" + 名称
+        self.approval_actions: list[tuple] = []
+        self.group_error: FeishuError | None = None
 
     @staticmethod
     def open_id_for(key: str) -> str:
@@ -676,3 +761,49 @@ class FakeFeishu:
         if self.send_error:
             raise self.send_error
         self.sent.append((open_id, card))
+
+    # ---- 审批 ----
+    def approval_definition(self, approval_code: str) -> dict:
+        return {"approval_name": "资源申请", "form": json.dumps(self.approval_form, ensure_ascii=False)}
+
+    def approval_pending(self, approval_code: str, days: int = 60) -> list[str]:
+        return [code for code, inst in self.instances.items() if inst.get("status") == "PENDING"]
+
+    def approval_instance(self, instance_code: str) -> dict:
+        self.calls.append(("approval_instance", instance_code))
+        if instance_code not in self.instances:
+            raise FeishuError("读取审批单失败：code=1390003 instance not found")
+        return {k: v for k, v in self.instances[instance_code].items() if not k.startswith("_")}
+
+    def approval_approve(self, approval_code: str, instance_code: str, task_id: str, open_id: str, comment: str, form: list[dict] | None = None) -> None:
+        """同意当前任务：这个任务记成已通过，后面还有节点就流转过去，没有了整张单通过。"""
+        inst = self.instances[instance_code]
+        task = next(t for t in inst["task_list"] if t["id"] == task_id and t["status"] == "PENDING" and t["open_id"] == open_id)
+        task["status"] = "APPROVED"
+        self.approval_actions.append(("approve", instance_code, task["node_name"], comment, form))
+        flow = inst.setdefault("_flow", [])
+        if flow:
+            node, who = flow.pop(0)
+            inst["task_list"].append({"id": f"{task_id}+", "node_name": node, "open_id": who, "status": "PENDING"})
+        else:
+            inst["status"] = "APPROVED"
+
+    def approval_comment(self, instance_code: str, open_id: str, text: str) -> None:
+        self.approval_actions.append(("comment", instance_code, open_id, text))
+
+    # ---- 用户组 ----
+    def group_id(self, name: str) -> str:
+        return f"g-{name}" if name in self.groups else ""
+
+    def group_members(self, group_id: str) -> list[str]:
+        return sorted(self.groups[group_id.removeprefix("g-")])
+
+    def group_add(self, group_id: str, open_id: str) -> None:
+        if self.group_error:
+            raise self.group_error
+        self.groups[group_id.removeprefix("g-")].add(open_id)
+
+    def group_remove(self, group_id: str, open_id: str) -> None:
+        if self.group_error:
+            raise self.group_error
+        self.groups[group_id.removeprefix("g-")].discard(open_id)

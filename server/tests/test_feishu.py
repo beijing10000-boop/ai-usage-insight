@@ -262,6 +262,51 @@ def test_aily_names_look_further_back_for_agents_nobody_used_lately():
     assert windows == [0, 90, 180, 270, 360, 450]
 
 
+def test_approval_and_group_requests():
+    """追加额度自动审批用到的接口：查审批中的单子（30 天一段、翻页）、同意（表单是 JSON 字符串）、评论、用户组加人 / 移人。"""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        seen.append((request.method, request.url.path, dict(request.url.params), body))
+        path = request.url.path
+        if path.endswith("/instances/query"):
+            first = "page_token" not in request.url.params
+            code = f"i-{body['instance_start_time_to']}-{'a' if first else 'b'}"
+            return httpx.Response(200, json={"code": 0, "data": {"instance_list": [{"instance": {"code": code}}], "has_more": first, "page_token": "p2" if first else ""}})
+        if path.endswith("/group/simplelist"):
+            return httpx.Response(200, json={"code": 0, "data": {"grouplist": [{"id": "g1", "name": "别的组"}, {"id": "g2", "name": "追加组"}], "has_more": False}})
+        if path.endswith("/member/simplelist"):
+            return httpx.Response(200, json={"code": 0, "data": {"memberlist": [{"member_id": "ou_1", "member_type": "user"}], "has_more": False}})
+        if "/approvals/" in path:
+            return httpx.Response(200, json={"code": 0, "data": {"approval_name": "资源申请", "form": "[]"}})
+        if "/instances/" in path and request.method == "GET":
+            return httpx.Response(200, json={"code": 0, "data": {"status": "PENDING", "form": "[]", "task_list": []}})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    fs, _ = client(handler)
+    codes = fs.approval_pending("CODE-1", days=45)  # 45 天 = 30 + 15 两段，每段两页
+    queries = [s for s in seen if s[1].endswith("/instances/query")]
+    assert len(codes) == 4 and len(queries) == 4 and all(q[3]["approval_code"] == "CODE-1" and q[3]["instance_status"] == "PENDING" for q in queries)
+    spans = {(int(q[3]["instance_start_time_to"]) - int(q[3]["instance_start_time_from"])) // 86400000 for q in queries}
+    assert spans == {30, 15} and queries[0][2]["user_id_type"] == "open_id"
+    assert fs.approval_instance("i1")["status"] == "PENDING" and fs.approval_definition("CODE-1")["approval_name"] == "资源申请"
+    fs.approval_approve("CODE-1", "i1", "t1", "ou_me", "【自动处理】同意", form=[{"id": "f1", "type": "amount", "value": 100}])
+    method, path, params, body = seen[-1]
+    assert (method, path, params) == ("POST", "/open-apis/approval/v4/tasks/approve", {"user_id_type": "open_id"})
+    assert body == {"approval_code": "CODE-1", "instance_code": "i1", "task_id": "t1", "user_id": "ou_me", "comment": "【自动处理】同意",
+                    "form": '[{"id": "f1", "type": "amount", "value": 100}]'}  # fmt: skip
+    fs.approval_comment("i1", "ou_me", "【自动处理】评论")
+    method, path, params, body = seen[-1]
+    assert path == "/open-apis/approval/v4/instances/i1/comments" and params == {"user_id_type": "open_id", "user_id": "ou_me"}
+    assert json.loads(body["content"]) == {"text": "【自动处理】评论"}
+    assert fs.group_id("追加组") == "g2" and fs.group_id("没有的组") == "" and fs.group_members("g2") == ["ou_1"]
+    fs.group_add("g2", "ou_2")
+    assert seen[-1][1:] == ("/open-apis/contact/v3/group/g2/member/add", {}, {"member_type": "user", "member_id_type": "open_id", "member_id": "ou_2"})
+    fs.group_remove("g2", "ou_2")
+    assert seen[-1][1] == "/open-apis/contact/v3/group/g2/member/remove"
+
+
 def test_check_reports_connection_and_tenant():
     fs, _ = client(lambda r: httpx.Response(200, json={"code": 0, "data": {"tenant": {"name": "示例公司"}}}))
     assert fs.check() == {"connected": True, "tenant": "示例公司", "aily": None}

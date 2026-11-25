@@ -125,7 +125,7 @@ def test_alert_card(env, alerts):
     env.ctx.config.save("allowance", {"per_member": "20", "extra": "2000", "topped_at": "3000"}, "ou_admin")
     now = datetime.fromisoformat(f"{D1}T15:30:00+08:00")
     used = alerts.usage(now.strftime("%Y-%m"))["ou_bob"]  # 鲍勃这个月至少用了 30 点
-    base100 = next(lv for lv in alerts.planner()("ou_bob") if lv["level"] == "base:100")
+    base100 = next(lv for lv in alerts.planner(now.strftime("%Y-%m"))("ou_bob") if lv["level"] == "base:100")
     card = alerts.card("ou_bob", used, base100, now)
     text = text_of(card)
     assert card["header"]["title"]["content"] == "飞书/豆包 AI 额度提醒 ｜ 本月已达 100%"
@@ -137,7 +137,7 @@ def test_alert_card(env, alerts):
     assert card["elements"][-1]["elements"][0]["content"] == f"统计时间：{now.month} 月 1 日 - {now.month} 月 {now.day} 日 15:30（当天的用量每 10 分钟更新一次）"
     # 按合计提醒：写明合计多少点，额度那一排列出追加额度，已用比例按基础 + 追加合计算（37 / 40 = 92%）
     env.ctx.config.save("allowance", {"extra": "20", "topped_at": "30"}, "ou_admin")
-    total80 = next(lv for lv in alerts.planner()("ou_bob") if lv["level"] == "total:80")
+    total80 = next(lv for lv in alerts.planner(now.strftime("%Y-%m"))("ou_bob") if lv["level"] == "total:80")
     card = alerts.card("ou_bob", 37.0, total80, now)
     assert card["header"]["title"]["content"] == "飞书/豆包 AI 额度提醒 ｜ 本月已达 80%（含追加额度）"
     assert "已经达到基础额度和追加额度合计（40 点）的 **80%**" in text_of(card)
@@ -175,7 +175,7 @@ def test_alert_and_top_up_pages(env):
     assert [oid for oid, _ in env.feishu.sent][-1] == "ou_admin"
     # 额度分配页：一般追加多少、多少点算已追加、个别人的追加额度。选人用和成员用量一样的找人框：框里显示姓名，open_id 在隐藏字段里
     quota = c.get("/quota").text
-    assert "追加额度" in quota and 'data-member-pick="extra-who-value"' in quota and '<input type="hidden" id="extra-who-value" name="target" />' in quota
+    assert "追加额度" in quota and 'data-member-pick="extra-who-value"' in quota and '<input type="hidden" id="extra-who-value" name="target" value="" />' in quota
     assert 'list="extra-who-list"' not in quota
     assert c.post("/quota", data={"action": "topup", "extra": "2500", "topped_at": "3200"}).status_code == 303
     assert env.ctx.config.get("allowance")["extra"] == 2500 and env.ctx.config.get("allowance")["topped_at"] == 3200

@@ -28,6 +28,14 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "report_monthly": {"enabled": False, "day": 1, "hour": 9, "last_push_date": "", "last_period": ""},
     # 额度告警：这个月的个人用量到了基础额度的这些百分比时提醒本人；追加过额度的（见 allowance.topped_at），再按「基础 + 追加」的这些百分比提醒一轮
     "quota_alert": {"enabled": False, "thresholds": [80, 100]},
+    # 追加额度自动审批（见 topup.py）。mode：off 关 | preview 只预览（只看单子、算出会怎么处理，不评论不审批不加组）| on 自动处理。
+    # approval_code = 盯着哪个审批；approver = 以谁的身份处理（只处理落在这个人名下的任务）；approve_node / handle_node = 审批节点、
+    # 办理节点的名称里含什么；category = 表单「类别」里含什么才算；group = 追加后把人加进哪个飞书用户组；points / fee = 追加多少点、
+    # 填多少预估费用；used_up = 这个月用到多少点算基础额度用完了；reset_month = 用户组上次清空是哪个月
+    "topup": {
+        "mode": "off", "approval_code": "", "approver": "", "approve_node": "审批人", "handle_node": "办理人", "category": "",
+        "group": "", "points": 2000, "fee": 100, "used_up": 1950, "reset_month": "",
+    },  # fmt: skip
 }
 
 
@@ -116,6 +124,23 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
             if not values or len(values) > 6 or values[0] < 1 or values[-1] > 100:
                 raise ConfigError("告警档位要在 1 到 100（%）之间，至少 1 个、最多 6 个")
             out["thresholds"] = values
+    elif key == "topup":
+        if "mode" in patch:
+            if patch["mode"] not in ("off", "preview", "on"):
+                raise ConfigError("自动审批只能是关闭、只预览或自动处理")
+            out["mode"] = patch["mode"]
+        for field in ("approval_code", "approver", "approve_node", "handle_node", "category", "group"):
+            if field in patch:
+                out[field] = str(patch[field] or "").strip()[:100]
+        for field, what in (("points", "追加点数"), ("fee", "预估费用"), ("used_up", "算作用完的点数")):
+            if field in patch:
+                try:
+                    value = float(str(patch[field]).strip())
+                except ValueError:
+                    raise ConfigError(f"{what}要填数字") from None
+                if not 0 <= value <= 1e9:
+                    raise ConfigError(f"{what}不能是负数")
+                out[field] = round(value, 2)
     else:
         raise ConfigError("没有这个配置项")
     return out
@@ -189,3 +214,14 @@ class Config:
 
     def delete_extra(self, open_id: str) -> None:
         self.db.x("DELETE FROM quota_extras WHERE open_id=?", (open_id,))
+
+    # ---------- 追加记录：自动审批给谁在哪个月加了多少点 ----------
+    def topup_points(self, open_id: str, month: str) -> float:
+        """这个人在这个月（YYYY-MM）追加了多少点，没追加过是 0。"""
+        return float(self.db.val("SELECT points FROM topups WHERE month=? AND open_id=?", (month, open_id)) or 0)
+
+    def quota_extra(self, open_id: str, month: str) -> tuple[float, bool]:
+        """额度那一排用的：(这个人的追加额度, 这个月是不是确实追加过)。有追加记录的按记录算；没有的按一般 / 单独设置的追加额度，
+        是不是追加过交给「用量超过多少点算已追加」去推断。"""
+        points = self.topup_points(open_id, month)
+        return (points, True) if points else (self.extra_for(open_id), False)

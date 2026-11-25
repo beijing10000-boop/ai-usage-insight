@@ -42,6 +42,7 @@ AUDIT_ACTIONS = {
     "quota": "额度分配",
     "mapping": "应用映射",
     "report": "报表发送",
+    "topup": "追加审批",
     "token_create": "生成令牌",
     "token_revoke": "撤销令牌",
     "role_grant": "授予管理员",
@@ -442,6 +443,47 @@ def register(app: FastAPI, c: Ctx) -> None:
             "reports.html", viewer, "reports", request, kinds=kinds, scope=c.config.get("report")["scope"], runs=c.report.runs(), weekdays=WEEKDAYS,
             leaders=len(c.directory.leaders()), allowance=c.config.monthly_allowance, alert=alert,
         )  # fmt: skip
+
+    # ---------- 追加审批 ----------
+    @app.get("/topups")
+    def topups_page(request: Request):
+        viewer, bad = guard(request, "topups")
+        if bad:
+            return bad
+        cfg = c.config.get("topup")
+        month = today().isoformat()[:7]
+        records = c.topups.records()
+        return c.page(
+            "topups.html", viewer, "topups", request, cfg=cfg, missing=c.topups.ready(cfg), state=c.topups.state(), records=records,
+            grants=c.topups.grants(month), month=month, approver_name=c.directory.user_name(cfg["approver"]) if cfg["approver"] else "",
+            texts=c.topups.texts(cfg, 1234, c.config.monthly_allowance), open_count=sum(1 for r in records if r["status"] not in ("granted", "closed")),
+        )  # fmt: skip
+
+    @app.post("/topups")
+    def topups_post(
+        request: Request, action: str = Form(...), mode: str = Form("off"), approval_code: str = Form(""), approver: str = Form(""),
+        approve_node: str = Form(""), handle_node: str = Form(""), category: str = Form(""), group: str = Form(""),
+        points: str = Form(""), fee: str = Form(""), used_up: str = Form(""),
+    ):  # fmt: skip
+        viewer, bad = c.poster(request)
+        if bad:
+            return bad
+        back = ("回到追加审批", "/topups")
+        if action == "run":
+            threading.Thread(target=c.topups.run, name="topup-manual", daemon=True).start()
+            return c.done("/topups#records", "topup_run")
+        if action != "save":
+            return oops(viewer, "不认识的操作", "这个操作不存在。", back, "topups")
+        patch = {"mode": mode, "approval_code": approval_code, "approver": approver, "approve_node": approve_node, "handle_node": handle_node,
+                 "category": category, "group": group, "points": points, "fee": fee, "used_up": used_up}  # fmt: skip
+        try:
+            saved = c.topups.save(patch, viewer.open_id)
+        except ConfigError as e:
+            return oops(viewer, "追加审批设置没有保存", str(e), back, "topups")
+        mode_name = {"off": "关闭", "preview": "只预览", "on": "自动处理"}[saved["mode"]]
+        who = c.directory.user_name(saved["approver"]) if saved["approver"] else "未设置"
+        c.db.audit(viewer.open_id, "topup", f"追加审批：{mode_name}，以 {who} 的身份处理，用户组「{saved['group'] or '未设置'}」，追加 {saved['points']:g} 点")
+        return c.done("/topups", "topup_saved")
 
     @app.get("/reports/runs/{run_id}")
     def report_run_page(request: Request, run_id: int, card: int = 0):

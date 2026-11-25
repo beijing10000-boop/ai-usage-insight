@@ -37,17 +37,16 @@ def level_name(level: str) -> str:
     return f"{'基础' if scope == 'base' else '基础 + 追加'} {pct}%"
 
 
-def plan_levels(per: float, extra: float, topped_at: float, thresholds: list[int]) -> list[dict]:
+def plan_levels(per: float, extra: float, topped_at: float, thresholds: list[int], topped: bool = False) -> list[dict]:
     """一个人这个月的提醒档位，按点数从低到高：先是基础额度的各个百分比；再是「基础 + 追加」合计的各个百分比，
-    只算比基础额度多、也超过「算作已追加的用量」的那些（没到那么多，就不当作追加过）。"""
+    只算比基础额度多、也超过「算作已追加的用量」的那些（没到那么多，就不当作追加过）。
+    topped：这个月有追加记录、确实追加过，合计的档位只要比基础额度多就算。"""
     if not per:
         return []
     total = per + extra
+    floor = per if topped else max(per, topped_at)
     out = [{"level": f"base:{t}", "scope": "base", "pct": t, "line": per * t / 100, "total": per} for t in thresholds]
-    out += [
-        {"level": f"total:{t}", "scope": "total", "pct": t, "line": total * t / 100, "total": total}
-        for t in thresholds if total * t / 100 > max(per, topped_at)
-    ]  # fmt: skip
+    out += [{"level": f"total:{t}", "scope": "total", "pct": t, "line": total * t / 100, "total": total} for t in thresholds if total * t / 100 > floor]
     return sorted(out, key=lambda lv: lv["line"])
 
 
@@ -81,19 +80,21 @@ class QuotaAlerts:
     def thresholds(self) -> list[int]:
         return list(self.config.get("quota_alert")["thresholds"])
 
-    def planner(self):
-        """open_id → 他的提醒档位。设置和个别人的追加额度一次读好（每次检查要算几百个人）。"""
+    def planner(self, month: str):
+        """open_id → 他这个月的提醒档位。设置、个别人的追加额度、这个月的追加记录一次读好（每次检查要算几百个人）。"""
         allowance = self.config.get("allowance")
-        per, extra, topped = float(allowance["per_member"] or 0), float(allowance["extra"]), float(allowance["topped_at"])
+        per, extra, topped_at = float(allowance["per_member"] or 0), float(allowance["extra"]), float(allowance["topped_at"])
         special = {r["open_id"]: float(r["extra"]) for r in self.config.extras()}
+        granted = {r[0]: float(r[1]) for r in self.db.q("SELECT open_id, points FROM topups WHERE month=?", (month,))}  # 自动审批加的
         thresholds = self.thresholds()
-        return lambda open_id: plan_levels(per, special.get(open_id, extra), topped, thresholds)
+        return lambda open_id: plan_levels(per, granted.get(open_id) or special.get(open_id, extra), topped_at, thresholds, topped=open_id in granted)
 
     def levels(self, now: datetime) -> list[dict]:
         """页面上看：这个月到了每个档位的各有多少人（档位的点数按一般的追加额度写）。"""
-        plan = self.planner()
+        month = self.month_of(now)
+        plan = self.planner(month)
         counts: dict[str, int] = {}
-        for oid, used in self.usage(self.month_of(now)).items():
+        for oid, used in self.usage(month).items():
             for lv in plan(oid):
                 if used >= lv["line"]:
                     counts[lv["level"]] = counts.get(lv["level"], 0) + 1
@@ -105,7 +106,7 @@ class QuotaAlerts:
         done: dict[str, set[str]] = {}
         for r in self.db.q("SELECT open_id, level FROM quota_alerts WHERE month=?", (month,)):
             done.setdefault(r[0], set()).add(r[1])
-        plan = self.planner()
+        plan = self.planner(month)
         out = []
         for oid, used in sorted(self.usage(month).items(), key=lambda kv: -kv[1]):
             levels = plan(oid)
@@ -174,7 +175,7 @@ class QuotaAlerts:
 
     def baseline(self, now: datetime) -> int:
         month = self.month_of(now)
-        plan = self.planner()
+        plan = self.planner(month)
         stamp = int(time.time())
         people = 0
         with self.db.tx() as c:
@@ -206,7 +207,7 @@ class QuotaAlerts:
         with self._lock:
             month = self.month_of(now)
             usage = self.usage(month)
-            plan = self.planner()
+            plan = self.planner(month)
             out = []
             for oid, key in self.waiting(now).items():
                 level = next((lv for lv in plan(oid) if lv["level"] == key), None)
@@ -220,7 +221,7 @@ class QuotaAlerts:
         """「测试发送给我」：按自己这个月的实际用量发一张（没跨过档位就按第一个档位发），不记录。"""
         now = now or datetime.now(CST)
         used = self.usage(self.month_of(now)).get(open_id, 0.0)
-        levels = self.planner()(open_id)
+        levels = self.planner(self.month_of(now))(open_id)
         if not levels:
             return {"open_id": open_id, "level": "", "used": used, "status": "failed", "error": "还没有设置每人每月基础额度"}
         hit = [lv for lv in levels if used >= lv["line"]]
@@ -254,8 +255,9 @@ class QuotaAlerts:
             reached = f"基础额度和追加额度合计（{points(total)} 点）的 **{pct}%**"
         intro = f"您 **{month_name(month)}** 的飞书/豆包 AI 用量已经达到{reached}。"
         elements: list[dict] = [_md(f"**{name}**，{intro}" if name else intro)]
-        # 额度那一排：追加过的（按合计提醒的，或者用量超过「算作已追加的用量」）把追加额度列出来，已用比例按基础 + 追加合计算
-        elements.append(allowance_stats(used, per, self.config.extra_for(open_id), self.config.topped_at, force_total=level["scope"] == "total"))
+        # 额度那一排：追加过的（这个月有追加记录、按合计提醒的，或者用量超过「算作已追加的用量」）把追加额度列出来，已用比例按基础 + 追加合计算
+        extra, topped = self.config.quota_extra(open_id, month)
+        elements.append(allowance_stats(used, per, extra, self.config.topped_at, force_total=topped or level["scope"] == "total"))
         scenes: dict[str, float] = {}
         for r in self.db.q(
             "SELECT scenario, SUM(amount) FROM usage_agg WHERE subject='member' AND entity_id=? AND usage_date BETWEEN ? AND ? GROUP BY scenario",

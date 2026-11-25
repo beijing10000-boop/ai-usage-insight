@@ -260,8 +260,10 @@ class UsageReports:
         elements.append(_md("**👤 个人用量**"))
         if per:
             elements.append(_md(f"**📊 {end.month} 月额度**　<font color='grey'>截止到 {short(end)}</font>"))
-            # 小标题已经写了是几月的额度（月报是上个月），所以这里叫「已用」不叫「本月已用」；追加额度按这个人的算
-            elements.append(allowance_stats(me["month_used"], per, self.config.extra_for(open_id), self.config.topped_at, used_label="已用"))
+            # 小标题已经写了是几月的额度（月报是上个月），所以这里叫「已用」不叫「本月已用」。
+            # 追加额度按这个人的算：那个月有追加记录（自动审批加的）就按记录、直接按合计列；没有记录的靠用量推断
+            extra, topped = self.config.quota_extra(open_id, period["end"][:7])
+            elements.append(allowance_stats(me["month_used"], per, extra, self.config.topped_at, used_label="已用", force_total=topped))
         if me["amount"] > 0:
             stats = [("消耗点数", points(me["amount"])), ("消耗金额", money(me["amount"] * price)), ("使用次数", f"{me['records']:,}")]
             if kind != "daily":

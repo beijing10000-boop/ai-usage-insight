@@ -26,6 +26,7 @@ from .prefs import Config
 from .quota import Quotas
 from .report import UsageReports
 from .sync import MAX_DAYS, SyncEngine, today
+from .topup import TopUps
 from .vault import Vault
 
 SESSION_COOKIE = "aius_session"
@@ -53,6 +54,8 @@ FLASH = {
     "report_test": ("success", "测试报表已发给你，去飞书里看一下"),
     "report_pushed": ("success", "报表已开始发送，刷新页面可以在发送记录里看到发到第几个人了"),
     "report_saved_skip": ("success", "已保存。今天已经过了发送时间，这一期不会自动补发，从下一个发送时间开始发；要发这一期请点「立即全量发送」"),
+    "topup_saved": ("success", "追加审批设置已保存，一分钟内按新设置检查"),
+    "topup_run": ("success", "已开始检查审批单，稍后刷新可以看到结果"),
     "alert_saved": ("success", "额度告警设置已保存"),
     "alert_baseline": ("success", "已保存。开启前已经超过档位的人这次不提醒，等他们跨过下一个档位时再提醒；需要的话可以点「补发」"),
     "alert_test": ("success", "额度提醒已发给你，去飞书里看一下"),
@@ -134,6 +137,7 @@ class Ctx:
     report: UsageReports
     vault: Vault
     alerts: QuotaAlerts
+    topups: TopUps
 
     def __post_init__(self) -> None:
         self.signer = URLSafeTimedSerializer(self.s.secret_key, salt="aius-session")
