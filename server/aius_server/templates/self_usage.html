@@ -30,6 +30,7 @@
   {{ stat("使用次数", p.records|num, "每用一次 AI 功能记一次") }}
   {{ stat("活跃天数", p.active_days ~ " / " ~ p.days, "有用量的天数 / 总天数") }}
   {% if allowance %}{{ allowance_stat(allowance) }}{% endif %}
+  {% if topup %}{{ stat("追加额度", topup|num ~ " 点", allowance.label ~ "审批通过后追加的，只在当月有效" if allowance else "审批通过后追加的，只在当月有效") }}{% endif %}
 </div>
 
 <div class="grid2">

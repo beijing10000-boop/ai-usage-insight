@@ -401,6 +401,7 @@ def register(app: FastAPI, c: Ctx) -> None:
             "self_usage.html", viewer, active, request, rng=rng, by=by, p=profile, mine=mine, rows=rows, pager=Pager(page, 20, total),
             keep={"member": member if open_id != viewer.open_id else ""}, usage=usage_chart(trend, split=False),
             allowance=an.allowance(c.allowance_month(rng), member=open_id, limit=1),
+            topup=c.config.topup_points(open_id, c.allowance_month(rng)),  # 那个月自动审批给他追加了多少点
         )  # fmt: skip
 
     @app.get("/self-usage/export.xlsx")

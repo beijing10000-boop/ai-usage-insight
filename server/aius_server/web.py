@@ -177,6 +177,7 @@ def navigation(viewer: Viewer) -> list[tuple[str, list[tuple[str, str, str, str]
                 "运营",
                 [
                     ("quota", "/quota", "额度分配", "quota"),
+                    ("topups", "/topups", "追加审批", "shield"),
                     ("sync", "/sync", "同步管理", "sync"),
                     ("logs", "/logs", "执行日志", "list"),
                     ("reports", "/reports", "报表发送", "send"),

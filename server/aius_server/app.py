@@ -32,6 +32,7 @@ from .quota import Quotas
 from .remote_mcp import build_remote_mcp
 from .alerts import QuotaAlerts
 from .report import UsageReports
+from .topup import TopUps
 from .scheduler import Scheduler
 from .sync import SyncEngine
 from .vault import Vault
@@ -66,11 +67,13 @@ def create_app(settings: Settings | None = None, feishu=None) -> FastAPI:
     analytics = Analytics(db, directory, config)
     report = UsageReports(db, fs, directory, analytics, config, s.public_url, engine)
     alerts = QuotaAlerts(db, fs, directory, config, s.public_url, engine)
+    topups = TopUps(db, fs, directory, config)
     ctx = Ctx(
         s=s, db=db, fs=fs, directory=directory, config=config, access=Access(s, db, directory), engine=engine,
         analytics=analytics, quotas=Quotas(db, directory), insight=Insight(s, analytics, vault), report=report, vault=vault, alerts=alerts,
+        topups=topups,
     )  # fmt: skip
-    scheduler = Scheduler(db, config, engine, report, alerts=alerts)
+    scheduler = Scheduler(db, config, engine, report, alerts=alerts, topups=topups)
     mcp_gate, mcp_server = build_remote_mcp(ctx)
     if not vault.configured:
         vault.bootstrap_token()
