@@ -180,9 +180,11 @@ def test_granted_points_show_up_in_personal_allowance(env, tp):
     env.db.x("INSERT INTO topups(month, open_id, points, source, instance_code, created_at) VALUES('2026-11','ou_bob',2000,'approval','i1',0)")
     config = env.ctx.config
     assert config.quota_extra("ou_bob", "2026-11") == (2000, True) and config.quota_extra("ou_bob", "2026-12") == (2000, False)
-    # 额度提醒：有追加记录的人按「基础 + 追加」再提醒一轮，卡片上直接按合计列（哪怕用量还没到 3000）
+    # 额度提醒：有追加记录的人按「基础 + 追加」再提醒一轮，卡片上直接按合计列；没有记录的人、别的月份只按基础额度
     alerts = env.ctx.alerts
     assert [lv["level"] for lv in alerts.planner("2026-11")("ou_bob")] == ["base:80", "base:100", "total:80", "total:100"]
+    assert [lv["level"] for lv in alerts.planner("2026-11")("ou_dave")] == ["base:80", "base:100"]
+    assert [lv["level"] for lv in alerts.planner("2026-12")("ou_bob")] == ["base:80", "base:100"]
     card = alerts.card("ou_bob", 2100.0, alerts.planner("2026-11")("ou_bob")[1], NOW)
     assert "追加额度" in json.dumps(card["elements"][1], ensure_ascii=False) and "**52%**" in json.dumps(card["elements"][1], ensure_ascii=False)  # 2100 / 4000
 

@@ -1,6 +1,6 @@
 """额度告警：每个人这个月的用量到了基础额度的 80%、100%（档位可以改）时，用应用机器人给他本人发一张飞书卡片提醒；
-追加过额度的人（这个月用量超过 3000 点，见「额度分配」），再按「基础 + 追加」合计的 80%、100% 提醒一轮
-（一般每人追加 2000 点，合计 4000 点，就是 3200 点和 4000 点；个别人追加得不一样的，在「额度分配」里单独设置）。
+追加过额度的人（这个月有追加记录，或者在「额度分配」里单独设置了追加额度），再按「基础 + 追加」合计的 80%、100% 提醒一轮
+（一般每人追加 2000 点，合计 4000 点，就是 3200 点和 4000 点）。没追加过的人只按基础额度提醒，不再按用量去猜他追加没追加。
 
 - 看的是这个月 1 日到现在的个人用量（当天的靠当天增量同步，每 10 分钟更新）。
 - 卡片上的额度那一排和周报、月报一样（report.allowance_stats）：追加过的把追加额度列出来，已用比例按「基础 + 追加」合计算。
@@ -37,16 +37,15 @@ def level_name(level: str) -> str:
     return f"{'基础' if scope == 'base' else '基础 + 追加'} {pct}%"
 
 
-def plan_levels(per: float, extra: float, topped_at: float, thresholds: list[int], topped: bool = False) -> list[dict]:
-    """一个人这个月的提醒档位，按点数从低到高：先是基础额度的各个百分比；再是「基础 + 追加」合计的各个百分比，
-    只算比基础额度多、也超过「算作已追加的用量」的那些（没到那么多，就不当作追加过）。
-    topped：这个月有追加记录、确实追加过，合计的档位只要比基础额度多就算。"""
+def plan_levels(per: float, extra: float, thresholds: list[int], topped: bool = False) -> list[dict]:
+    """一个人这个月的提醒档位，按点数从低到高：基础额度的各个百分比；追加过额度的（topped），再加上「基础 + 追加」合计的
+    各个百分比里比基础额度多的那些。"""
     if not per:
         return []
     total = per + extra
-    floor = per if topped else max(per, topped_at)
     out = [{"level": f"base:{t}", "scope": "base", "pct": t, "line": per * t / 100, "total": per} for t in thresholds]
-    out += [{"level": f"total:{t}", "scope": "total", "pct": t, "line": total * t / 100, "total": total} for t in thresholds if total * t / 100 > floor]
+    if topped:
+        out += [{"level": f"total:{t}", "scope": "total", "pct": t, "line": total * t / 100, "total": total} for t in thresholds if total * t / 100 > per]
     return sorted(out, key=lambda lv: lv["line"])
 
 
@@ -83,14 +82,14 @@ class QuotaAlerts:
     def planner(self, month: str):
         """open_id → 他这个月的提醒档位。设置、个别人的追加额度、这个月的追加记录一次读好（每次检查要算几百个人）。"""
         allowance = self.config.get("allowance")
-        per, extra, topped_at = float(allowance["per_member"] or 0), float(allowance["extra"]), float(allowance["topped_at"])
-        special = {r["open_id"]: float(r["extra"]) for r in self.config.extras()}
-        granted = {r[0]: float(r[1]) for r in self.db.q("SELECT open_id, points FROM topups WHERE month=?", (month,))}  # 自动审批加的
+        per, extra = float(allowance["per_member"] or 0), float(allowance["extra"])
+        special = {r["open_id"]: float(r["extra"]) for r in self.config.extras()}  # 单独设置了追加额度的：一直算追加过
+        granted = {r[0]: float(r[1]) for r in self.db.q("SELECT open_id, points FROM topups WHERE month=?", (month,))}  # 这个月的追加记录
         thresholds = self.thresholds()
-        return lambda open_id: plan_levels(per, granted.get(open_id) or special.get(open_id, extra), topped_at, thresholds, topped=open_id in granted)
+        return lambda open_id: plan_levels(per, granted.get(open_id) or special.get(open_id, extra), thresholds, topped=open_id in granted or open_id in special)
 
     def levels(self, now: datetime) -> list[dict]:
-        """页面上看：这个月到了每个档位的各有多少人（档位的点数按一般的追加额度写）。"""
+        """页面上看：这个月到了每个档位的各有多少人（档位的点数按一般的追加额度写；合计的档位只数追加过的人）。"""
         month = self.month_of(now)
         plan = self.planner(month)
         counts: dict[str, int] = {}
@@ -98,7 +97,9 @@ class QuotaAlerts:
             for lv in plan(oid):
                 if used >= lv["line"]:
                     counts[lv["level"]] = counts.get(lv["level"], 0) + 1
-        return [{"level": lv["level"], "name": level_name(lv["level"]), "line": lv["line"], "people": counts.get(lv["level"], 0)} for lv in plan("")]
+        allowance = self.config.get("allowance")
+        general = plan_levels(float(allowance["per_member"] or 0), float(allowance["extra"]), self.thresholds(), topped=True)
+        return [{"level": lv["level"], "name": level_name(lv["level"]), "line": lv["line"], "people": counts.get(lv["level"], 0)} for lv in general]
 
     def pending(self, now: datetime) -> list[tuple[str, float, dict, list[dict]]]:
         """现在要提醒的人：(open_id, 这个月已用, 要提醒的档位 = 跨过的最高档位, 这次新跨过的档位)。"""
@@ -255,9 +256,9 @@ class QuotaAlerts:
             reached = f"基础额度和追加额度合计（{points(total)} 点）的 **{pct}%**"
         intro = f"您 **{month_name(month)}** 的飞书/豆包 AI 用量已经达到{reached}。"
         elements: list[dict] = [_md(f"**{name}**，{intro}" if name else intro)]
-        # 额度那一排：追加过的（这个月有追加记录、按合计提醒的，或者用量超过「算作已追加的用量」）把追加额度列出来，已用比例按基础 + 追加合计算
+        # 额度那一排：追加过的（这个月有追加记录、单独设置了追加额度，或者这张就是按合计提醒的）把追加额度列出来，已用比例按基础 + 追加合计算
         extra, topped = self.config.quota_extra(open_id, month)
-        elements.append(allowance_stats(used, per, extra, self.config.topped_at, force_total=topped or level["scope"] == "total"))
+        elements.append(allowance_stats(used, per, extra, topped=topped or level["scope"] == "total"))
         scenes: dict[str, float] = {}
         for r in self.db.q(
             "SELECT scenario, SUM(amount) FROM usage_agg WHERE subject='member' AND entity_id=? AND usage_date BETWEEN ? AND ? GROUP BY scenario",

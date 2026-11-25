@@ -124,22 +124,32 @@ def test_monthly_allowance_line(env):
     rest = ("剩余", points(20 - used)) if used < 20 else ("超出", points(used - 20))
     assert stat_row(els[3]) == [("已用", points(used)), ("基础额度", "20"), ("已用比例", f"{used / 20 * 100:.0f}%"), rest]
     assert els[4]["content"].startswith("**📈 昨天用量**") and stat_row(els[5])[0][0] == "消耗点数"
-    # 用量超过「算作已追加的用量」：列出这个人的追加额度（个别人单独设置的按他的算）
-    env.ctx.config.save("allowance", {"topped_at": "25"}, "ou_admin")
+    # 那个月有追加记录的人：列出追加的点数，比例按「基础 + 追加」合计算；别的月份的记录不算
+    month = period["end"][:7]
+    env.db.x("INSERT INTO topups(month, open_id, points, source, instance_code, created_at) VALUES('2020-01','ou_bob',40,'approval','old',0)")
+    assert stat_row(report.card(period, "ou_bob", report.personal(data, "ou_bob"), [])["elements"][3]) == stat_row(els[3])
+    env.db.x("INSERT INTO topups(month, open_id, points, source, instance_code, created_at) VALUES(?,'ou_bob',40,'approval','i1',0)", (month,))
+    row = report.card(period, "ou_bob", report.personal(data, "ou_bob"), [])["elements"][3]
+    assert [label for label, _ in stat_row(row)] == ["已用", "基础额度", "追加额度", "已用比例", "剩余" if used < 60 else "超出"] and stat_row(row)[2] == ("追加额度", "40")
+    # 单独设置了追加额度的人：没有追加记录也一直按「基础 + 他的追加额度」列
+    env.db.x("DELETE FROM topups")
     env.ctx.config.set_extra("ou_bob", "10", "", "ou_admin")
     row = report.card(period, "ou_bob", report.personal(data, "ou_bob"), [])["elements"][3]
     assert [label for label, _ in stat_row(row)] == ["已用", "基础额度", "追加额度", "已用比例", "剩余" if used < 30 else "超出"] and stat_row(row)[2] == ("追加额度", "10")
 
 
-def test_allowance_row_counts_base_plus_top_up_after_3000_points():
-    """用量超过 3000 点（可改）就当作已经追加过：列出追加额度，已用比例和剩余 / 超出按「基础 + 追加」合计算。"""
+def test_allowance_row_counts_base_plus_top_up_only_for_people_who_topped_up():
+    """追加过的人：列出追加额度，已用比例和剩余 / 超出按「基础 + 追加」合计算。没追加过的用得再多也只和基础额度比，不按用量去猜。"""
     from aius_server.report import allowance_stats
 
-    assert stat_row(allowance_stats(1650, 2000, 2000, 3000)) == [("本月已用", "1,650"), ("基础额度", "2,000"), ("已用比例", "82%"), ("剩余", "350")]
-    assert stat_row(allowance_stats(2500, 2000, 2000, 3000)) == [("本月已用", "2,500"), ("基础额度", "2,000"), ("已用比例", "125%"), ("超出", "500")]
-    row = allowance_stats(3500, 2000, 2000, 3000)  # 3500 / 4000 = 88%
+    assert stat_row(allowance_stats(1650, 2000, 2000)) == [("本月已用", "1,650"), ("基础额度", "2,000"), ("已用比例", "82%"), ("剩余", "350")]
+    assert stat_row(allowance_stats(3500, 2000, 2000)) == [("本月已用", "3,500"), ("基础额度", "2,000"), ("已用比例", "175%"), ("超出", "1,500")]
+    row = allowance_stats(3500, 2000, 2000, topped=True)  # 3500 / 4000 = 88%
     assert row["flex_mode"] == "trisect" and stat_row(row) == [("本月已用", "3,500"), ("基础额度", "2,000"), ("追加额度", "2,000"), ("已用比例", "88%"), ("剩余", "500")]
-    assert stat_row(allowance_stats(4100, 2000, 2000, 3000))[-2:] == [("已用比例", "102%"), ("超出", "100")]
+    # 刚追加、用量还不多的也按合计列
+    assert stat_row(allowance_stats(2200, 2000, 2000, topped=True))[-2:] == [("已用比例", "55%"), ("剩余", "1,800")]
+    assert stat_row(allowance_stats(4100, 2000, 2000, topped=True))[-2:] == [("已用比例", "102%"), ("超出", "100")]
+    assert len(stat_row(allowance_stats(2500, 2000, 0, topped=True))) == 4  # 追加额度是 0：没什么可列的
 
 
 def test_push_scope_and_test_send(env):

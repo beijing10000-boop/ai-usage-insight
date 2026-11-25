@@ -37,17 +37,15 @@
 
 <section class="panel" id="extras">
   <div class="section-head">
-    <div><h2>追加额度</h2><p>平台拿不到谁追加了额度，按用量推断：这个月用量超过 <b>{{ topup.topped_at|num }}</b> 点的，就当作已经追加过。
+    <div><h2>追加额度</h2><p>谁追加过额度，看<a href="/topups">「追加审批」</a>里的追加记录（审批通过、加进用户组时记一条），这个月现在有 <b>{{ topped_count }}</b> 人；不再按用量去猜。
       追加过的人，额度提醒、周报、月报里会把追加额度列出来，已用比例按「基础 + 追加」合计算，额度提醒也按合计的 80%、100% 再提醒一轮。
-      一般每人追加 <b>{{ topup.extra|num }}</b> 点；个别人追加得不一样，在下面单独设置。</p></div>
+      一般每人追加 <b>{{ topup.extra|num }}</b> 点；个别人追加得不一样，在下面单独设置，这些人一直按「基础 + 他的追加额度」算。</p></div>
   </div>
   <form method="post" action="/quota" class="add-row">
     <input type="hidden" name="action" value="topup" />
     <label class="inline-field" for="topup-extra">一般每人追加</label>
     <input id="topup-extra" name="extra" type="number" min="0" step="any" value="{{ '%g'|format(topup.extra) }}" />
-    <label class="inline-field" for="topup-at">点；用量超过</label>
-    <input id="topup-at" name="topped_at" type="number" min="0" step="any" value="{{ '%g'|format(topup.topped_at) }}" />
-    <span class="inline-field">点算已追加</span>
+    <span class="inline-field">点</span>
     <button type="submit" class="btn">保存</button>
   </form>
   <form method="post" action="/quota" class="add-row">
