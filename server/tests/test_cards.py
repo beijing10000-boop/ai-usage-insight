@@ -75,7 +75,7 @@ def test_send_records_pages_show_each_persons_card(env):
 def test_alert_records_link_to_the_card(env):
     alerts = env.ctx.alerts
     alerts.sleep = lambda _s: None
-    env.ctx.config.save("allowance", {"per_member": "100", "extra": "100", "topped_at": "150"}, "ou_admin")
+    env.ctx.config.save("allowance", {"per_member": "100", "extra": "100"}, "ou_admin")
     env.ctx.config.save("quota_alert", {"enabled": True}, "ou_admin")
     alerts.usage = lambda month: {"ou_bob": 85.0}
     alerts.check(datetime(2026, 11, 15, 10, 0, tzinfo=CST))

@@ -15,9 +15,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     # 点数折算费用：1 点 = point_price 元
     "pricing": {"point_price": 0.05},
     # 每人每月的基础额度（点）：飞书的个人 AI 额度按自然月发放、每月 1 日重置。0 = 没有设置，页面上不显示月度额度。
-    # extra = 一般每人追加多少点（个别人不一样的记在 quota_extras 表里）；topped_at = 这个月用量超过多少点就当作已经追加过
-    # （平台拿不到谁追加了，只能这样推断）：额度那一排把追加额度列出来、比例按基础 + 追加合计算，额度提醒也按合计再提醒一轮
-    "allowance": {"per_member": 0, "extra": 2000, "topped_at": 3000},
+    # extra = 一般每人追加多少点（个别人不一样的记在 quota_extras 表里）。谁追加过看追加记录（topups 表，见 Config.quota_extra）：
+    # 追加过的人，额度那一排把追加额度列出来、比例按基础 + 追加合计算，额度提醒也按合计再提醒一轮
+    "allowance": {"per_member": 0, "extra": 2000},
     # 报表发送（日报 / 周报 / 月报，各自一个开关）。scope 三种报表共用：active（这一期有用量的人，部门负责人只要部门有用量也发）
     # | all（通讯录里所有人）。日报发昨天的；周报 weekday 1..7 = 周一..周日，发上一周；月报 day 1..28 号，发上个月
     # last_push_date：定时任务上次发送是哪天；last_period：最近一次全量发送（定时或手动）发的是哪一期（这一期的第一天），
@@ -26,7 +26,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "report_daily": {"enabled": False, "hour": 9, "last_push_date": "", "last_period": ""},
     "report_weekly": {"enabled": False, "weekday": 1, "hour": 9, "last_push_date": "", "last_period": ""},
     "report_monthly": {"enabled": False, "day": 1, "hour": 9, "last_push_date": "", "last_period": ""},
-    # 额度告警：这个月的个人用量到了基础额度的这些百分比时提醒本人；追加过额度的（见 allowance.topped_at），再按「基础 + 追加」的这些百分比提醒一轮
+    # 额度告警：这个月的个人用量到了基础额度的这些百分比时提醒本人；追加过额度的（见 Config.quota_extra），再按「基础 + 追加」的这些百分比提醒一轮
     "quota_alert": {"enabled": False, "thresholds": [80, 100]},
     # 追加额度自动审批（见 topup.py）。mode：off 关 | preview 只预览（只看单子、算出会怎么处理，不评论不审批不加组）| on 自动处理。
     # approval_code = 盯着哪个审批；approver = 以谁的身份处理（只处理落在这个人名下的任务）；approve_node / handle_node = 审批节点、
@@ -86,17 +86,16 @@ def clean(key: str, patch: dict[str, Any]) -> dict[str, Any]:
             if not 0 <= value <= 1e9:
                 raise ConfigError("每人每月额度不能是负数")
             out["per_member"] = round(value, 2)
-        for field, what in (("extra", "默认追加额度"), ("topped_at", "算作已追加的用量")):
-            if field in patch:
-                raw = str(patch[field] or "").strip()
-                default = DEFAULTS["allowance"][field]
-                try:
-                    value = float(raw) if raw else float(default)  # 留空 = 默认值
-                except ValueError:
-                    raise ConfigError(f"{what}要填数字（点），留空就是默认的 {default} 点") from None
-                if not 0 <= value <= 1e9:
-                    raise ConfigError(f"{what}不能是负数")
-                out[field] = round(value, 2)
+        if "extra" in patch:
+            raw = str(patch["extra"] or "").strip()
+            default = DEFAULTS["allowance"]["extra"]
+            try:
+                value = float(raw) if raw else float(default)  # 留空 = 默认值
+            except ValueError:
+                raise ConfigError(f"默认追加额度要填数字（点），留空就是默认的 {default} 点") from None
+            if not 0 <= value <= 1e9:
+                raise ConfigError("默认追加额度不能是负数")
+            out["extra"] = round(value, 2)
     elif key == "report":
         if "scope" in patch:
             if patch["scope"] not in ("active", "all"):
@@ -183,16 +182,7 @@ class Config:
     def monthly_allowance(self) -> float:
         return float(self.get("allowance")["per_member"] or 0)
 
-    @property
-    def topped_at(self) -> float:
-        """这个月用量超过多少点就当作已经追加过额度。"""
-        return float(self.get("allowance")["topped_at"])
-
     # ---------- 追加额度：一般每人一样（allowance.extra），个别人不一样的单独记 ----------
-    def extra_for(self, open_id: str) -> float:
-        special = self.db.val("SELECT extra FROM quota_extras WHERE open_id=?", (open_id,))
-        return float(special) if special is not None else float(self.get("allowance")["extra"])
-
     def extras(self) -> list[dict]:
         return [dict(r) for r in self.db.q("SELECT * FROM quota_extras ORDER BY updated_at DESC")]
 
@@ -221,7 +211,12 @@ class Config:
         return float(self.db.val("SELECT points FROM topups WHERE month=? AND open_id=?", (month, open_id)) or 0)
 
     def quota_extra(self, open_id: str, month: str) -> tuple[float, bool]:
-        """额度那一排用的：(这个人的追加额度, 这个月是不是确实追加过)。有追加记录的按记录算；没有的按一般 / 单独设置的追加额度，
-        是不是追加过交给「用量超过多少点算已追加」去推断。"""
+        """额度那一排用的：(这个人的追加额度, 这个月是不是追加过)。追加过 = 这个月有追加记录（按记录的点数算），
+        或者单独给他设置了追加额度（一直按「基础 + 他的追加额度」算）；两样都没有就是没追加过，不再按用量去猜。"""
         points = self.topup_points(open_id, month)
-        return (points, True) if points else (self.extra_for(open_id), False)
+        if points:
+            return points, True
+        special = self.db.val("SELECT extra FROM quota_extras WHERE open_id=?", (open_id,))
+        if special is not None:
+            return float(special), float(special) > 0
+        return float(self.get("allowance")["extra"]), False

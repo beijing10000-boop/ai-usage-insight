@@ -89,7 +89,7 @@
 <section class="panel" id="alerts">
   <div class="section-head">
     <div><h2>额度告警</h2><p>每个人这个月的用量到了基础额度{% if allowance %}（{{ allowance|num }} 点）{% endif %}的下面这些百分比时，给他本人发一张飞书卡片提醒；
-      追加过额度的人（用量超过 {{ alert.allowance.topped_at|num }} 点），再按「基础 + 追加」合计（一般 {{ (allowance + alert.allowance.extra)|num }} 点）的这些百分比提醒一轮。
+      追加过额度的人（这个月有追加记录，或者单独设置了追加额度），再按「基础 + 追加」合计（一般 {{ (allowance + alert.allowance.extra)|num }} 点）的这些百分比提醒一轮。
       追加额度一般每人 {{ alert.allowance.extra|num }} 点{% if alert.special %}，{{ alert.special }} 人单独设置了{% endif %}，在「额度分配」里改。
       每个档位每月只提醒一次；一下跨过好几个档位只发最高的那个。只在 {{ alert.hours[0] }}:00–{{ alert.hours[1] }}:00 之间发，每 {{ alert.minutes }} 分钟看一次（当天的用量靠当天增量同步，每 10 分钟更新）。</p></div>
     <span class="status {{ 'ok' if acfg.enabled else 'muted' }}">{{ "已开启" if acfg.enabled else "已关闭" }}</span>

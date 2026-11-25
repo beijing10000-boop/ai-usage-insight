@@ -121,13 +121,14 @@ def register(app: FastAPI, c: Ctx) -> None:
             editing=c.quotas.get(edit) if edit else None, default_start=month.isoformat(), default_end=month_end.isoformat(), price=c.config.point_price,
             per_member=c.config.monthly_allowance, allowance=c.analytics.allowance(c.allowance_month(rng), limit=200), rng=rng,
             topup=c.config.get("allowance"), extras=extras,
+            topped_count=c.db.val("SELECT COUNT(*) FROM topups WHERE month=?", (month.strftime("%Y-%m"),)) or 0,
         )  # fmt: skip
 
     @app.post("/quota")
     def quota_post(
         request: Request, action: str = Form(...), id: int = Form(0), dimension: str = Form("department"), target: str = Form(""),
         amount: str = Form(""), period_start: str = Form(""), period_end: str = Form(""), note: str = Form(""), per_member: str = Form(""),
-        extra: str = Form(""), topped_at: str = Form(""),
+        extra: str = Form(""),
     ):  # fmt: skip
         viewer, bad = c.poster(request)
         if bad:
@@ -135,10 +136,10 @@ def register(app: FastAPI, c: Ctx) -> None:
         back = ("回到额度分配", "/quota")
         if action == "topup":
             try:
-                saved = c.config.save("allowance", {"extra": extra, "topped_at": topped_at}, viewer.open_id)
+                saved = c.config.save("allowance", {"extra": extra}, viewer.open_id)
             except ConfigError as e:
                 return oops(viewer, "追加额度设置没有保存", str(e), back, "quota")
-            c.db.audit(viewer.open_id, "config", f"追加额度：一般每人 {saved['extra']:g} 点，用量超过 {saved['topped_at']:g} 点算已追加")
+            c.db.audit(viewer.open_id, "config", f"追加额度：一般每人 {saved['extra']:g} 点")
             return c.done("/quota#extras", "saved")
         if action == "extra_set":
             try:
