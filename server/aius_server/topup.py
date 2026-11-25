@@ -124,7 +124,7 @@ class TopUps:
             "waiting": f"{TAG}本月基础额度未用完（已用 {points(used)} / {points(per)} 点），此审批单等用完后处理。",
             "opinion": f"{TAG}已核对：本月基础额度已用完，本月未追加过，同意追加 {p} 点。",
             "fee_note": f"本月基础额度已经用完，额外追加{p}点，预计费用{fee}元，次月失效。",
-            "handled": f"{TAG}已审批，已追加 {p} 点（已加入用户组「{cfg['group']}」），次月失效。",
+            "handled": f"{TAG}已经追加。",
         }
 
     # ---------- 设置 ----------

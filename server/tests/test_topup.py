@@ -82,7 +82,7 @@ def test_normal_request_is_approved_then_granted(env, tp):
     env.feishu.approval_approve("CODE-1", "i1", "t-i1+", "ou_alice", "同意")
     tp.run(NOW)
     assert env.feishu.groups[GROUP] == {"ou_bob"} and env.ctx.config.topup_points("ou_bob", "2026-11") == 2000
-    assert actions(env, "approve")[-1][1:4] == ("i1", "协作办理人", f"{TAG}已审批，已追加 2000 点（已加入用户组「{GROUP}」），次月失效。")
+    assert actions(env, "approve")[-1][1:4] == ("i1", "协作办理人", f"{TAG}已经追加。")
     assert row(env, "i1")["status"] == "granted" and env.feishu.instances["i1"]["status"] == "APPROVED"
     assert "自动追加 2000 点" in env.db.val("SELECT detail FROM audit_log WHERE action='topup' ORDER BY id DESC LIMIT 1")
     records = tp.records()
@@ -195,7 +195,7 @@ def test_topups_page_and_settings(env, tp):
     c = env.browser("admin@example.com")
     page = c.get("/topups").text
     assert "追加审批" in page and "自动处理中" in page and "S-i2" in page and "等基础额度用完" in page and "戴维" in page
-    assert f"{TAG}本月已经追加额外 2000 点，不再提供。请撤回审批单。" in page
+    assert f"{TAG}本月已经追加额外 2000 点，不再提供。请撤回审批单。" in page and f"<p>{TAG}已经追加。</p>" in page
     data = {"action": "save", "mode": "preview", "approval_code": "CODE-1", "approver": ME, "approve_node": "协作审批人", "handle_node": "协作办理人",
             "category": "协作/AI", "group": GROUP, "points": "2000", "fee": "100", "used_up": "1950"}  # fmt: skip
     assert c.post("/topups", data=data).headers["location"] == "/topups?done=topup_saved"
