@@ -116,6 +116,40 @@ def test_already_topped_up_this_month_gets_one_comment(env, tp):
     assert (row(env, "i3")["status"], row(env, "i3")["note"]) == ("closed", "已撤回")
 
 
+def refill(env, code: str, **values) -> None:
+    """申请人在被退回的单子上改了表单、重新提交（还是同一张单）。"""
+    form = json.loads(env.feishu.instances[code]["form"])
+    for f in form:
+        if f["name"] in values:
+            f["open_ids" if f["type"] == "contact" else "value"] = values[f["name"]]
+    env.feishu.instances[code]["form"] = json.dumps(form, ensure_ascii=False)
+
+
+def test_request_sent_back_and_fixed_is_picked_up(env, tp):
+    """退回让申请人改：资源名称写错被当成别的申请的，隔几分钟重新读表单，改对了就接着处理；使用人填了两个人的，改成一个人后下一轮就处理。"""
+    env.feishu.instances["fix"] = instance("fix", name="AI资源申请")  # 没写「额度」：认不出来
+    env.feishu.instances["two"] = instance("two", user="ou_carol", users=["ou_carol", "ou_dave"])
+    tp.run(NOW)
+    assert (row(env, "fix")["kind"], row(env, "two")["status"]) == ("other", "manual") and not env.feishu.approval_actions
+    refill(env, "fix", 资源名称="飞书豆包 AI 额度")
+    refill(env, "two", **{"资源负责人/使用人": ["ou_carol"]})
+    env.feishu.calls.clear()
+    tp.run(NOW)
+    assert (row(env, "two")["status"], row(env, "two")["member"]) == ("approved", "ou_carol")
+    assert ("approval_instance", "fix") not in env.feishu.calls and row(env, "fix")["kind"] == "other"  # 5 分钟内不重读
+    env.db.x("UPDATE topup_requests SET updated_at=updated_at-301 WHERE instance_code='fix'")
+    tp.run(NOW)
+    assert (row(env, "fix")["kind"], row(env, "fix")["status"], row(env, "fix")["resource"]) == ("quota", "approved", "飞书豆包 AI 额度")
+    # 重读了还不是额度申请的：照旧不碰，再等 5 分钟
+    env.feishu.instances["mail"] = instance("mail", name="公共邮箱申请")
+    tp.run(NOW)
+    env.db.x("UPDATE topup_requests SET updated_at=updated_at-301 WHERE instance_code='mail'")
+    env.feishu.calls.clear()
+    tp.run(NOW)
+    tp.run(NOW)
+    assert env.feishu.calls.count(("approval_instance", "mail")) == 1 and row(env, "mail")["kind"] == "other"
+
+
 def test_cases_left_to_a_human(env, tp):
     env.feishu.instances["two"] = instance("two", users=["ou_bob", "ou_dave"])  # 使用人填了两个人
     env.ctx.config.set_extra("ou_erin", "10000", "", "ou_admin")  # 单独设置了追加额度
