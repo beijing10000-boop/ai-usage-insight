@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS user_prefs (
 -- 同步任务。status: queued | running | success | partial | failed | stopped
 CREATE TABLE IF NOT EXISTS sync_runs (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    trigger        TEXT NOT NULL,              -- manual | schedule
+    trigger        TEXT NOT NULL,              -- manual | schedule | recheck（核对补拉）
     actor          TEXT NOT NULL,              -- 触发人 open_id；定时任务是 'system'
     start_date     TEXT NOT NULL,
     end_date       TEXT NOT NULL,

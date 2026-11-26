@@ -108,7 +108,7 @@ def test_already_topped_up_this_month_gets_one_comment(env, tp):
     env.feishu.instances["i4"] = instance("i4", user="ou_erin")
     tp.run(NOW)
     tp.run(NOW)
-    text = f"{TAG}本月已经追加额外 2000 点，不再提供。请撤回审批单。"
+    text = f"{TAG}本月已经追加额外 2000 点，不再自动处理，转为人工处理。"
     assert sorted(actions(env, "comment")) == [("comment", "i3", ME, text), ("comment", "i4", ME, text)] and not actions(env, "approve")
     assert row(env, "i3")["status"] == row(env, "i4")["status"] == "duplicate"
     env.feishu.instances["i3"]["status"] = "CANCELED"  # 申请人撤回了
@@ -229,7 +229,7 @@ def test_topups_page_and_settings(env, tp):
     c = env.browser("admin@example.com")
     page = c.get("/topups").text
     assert "追加审批" in page and "自动处理中" in page and "S-i2" in page and "等基础额度用完" in page and "戴维" in page
-    assert f"{TAG}本月已经追加额外 2000 点，不再提供。请撤回审批单。" in page and f"<p>{TAG}已经追加。</p>" in page
+    assert f"{TAG}本月已经追加额外 2000 点，不再自动处理，转为人工处理。" in page and f"<p>{TAG}已经追加。</p>" in page
     data = {"action": "save", "mode": "preview", "approval_code": "CODE-1", "approver": ME, "approve_node": "协作审批人", "handle_node": "协作办理人",
             "category": "协作/AI", "group": GROUP, "points": "2000", "fee": "100", "used_up": "1950"}  # fmt: skip
     assert c.post("/topups", data=data).headers["location"] == "/topups?done=topup_saved"

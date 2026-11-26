@@ -18,9 +18,9 @@ from aius_server.config import Settings
 from aius_server.feishu import CST, FeishuError
 from aius_server.insight import Insight
 from aius_server.prefs import ConfigError, clean
-from aius_server.sync import today
+from aius_server.sync import RECHECK_HOURS, today
 from aius_server.vault import Vault
-from conftest import D1, make_settings
+from conftest import D1, D2, make_settings
 
 STATIC = Path(__file__).resolve().parents[1] / "aius_server" / "static"
 
@@ -73,6 +73,26 @@ def test_live_sync_runs_every_few_minutes_while_the_schedule_is_on(empty):
     last = scheduler.live_thread
     scheduler.tick(now + timedelta(hours=1))
     assert scheduler.live_thread is last  # 关掉了
+
+
+def test_days_that_do_not_match_are_pulled_again_by_the_scheduler(env):
+    scheduler, config, engine = env.app.state.scheduler, env.ctx.config, env.ctx.engine
+    later = datetime.fromtimestamp(env.db.val("SELECT MAX(checked_at) FROM reconcile") + RECHECK_HOURS * 3600, CST)
+    scheduler.tick(later)
+    assert engine.active() is None  # 定时同步没开：不补拉
+    config.save("sync", {"enabled": True, "hour": 0, "range_days": 1, "live_minutes": 0}, "ou_admin")
+    config.mark("sync", "last_auto_date", later.date().isoformat())  # 今天的定时同步已经做过了
+    scheduler.tick(later - timedelta(minutes=5))
+    assert engine.active() is None  # 离上次核对还不到 2 小时
+    scheduler.tick(later)
+    run = engine.active()
+    assert (run["trigger"], run["actor"], run["start_date"], run["end_date"]) == ("recheck", "system", D2, D1)  # 测试数据里这两天对不上
+    engine.run_pending()
+    assert [r["tries"] for r in engine.recheck_status()] == [1, 1] and not engine.recheck_due()  # 还是对不上：再等 2 小时
+    admin = env.browser("admin@example.com")
+    assert "核对补拉" in admin.get("/logs").text and "核对补拉" in admin.get(f"/logs/{run['id']}").text
+    page = admin.get("/sync").text
+    assert f"{D1}：已自动补拉 1 次，下次约" in page and "每 2 小时自动整天重新拉一次" in page
 
 
 # ---------- 配置校验 ----------

@@ -3,6 +3,7 @@
 时间都按北京时间算。定时同步「到点」的意思是：已经过了设定的整点，而且今天还没自动同步过；
 所以服务在那个整点刚好重启也不会漏掉当天的同步。
 当天增量同步：开着定时同步、设了间隔（live_minutes），离上一次开始满了间隔就在单独的线程里再拉一次。
+核对补拉：开着定时同步时，最近几天里核对没对上的日子隔几个小时整天重新拉一次（规则见 SyncEngine.recheck_status）。
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ class Scheduler:
         now = now or datetime.now(CST)
         self.engine.watchdog()
         self._daily_sync(now)
+        self._recheck(now)
         self._live_sync(now)
         self.report.tick(now)
         if self.alerts:
@@ -72,6 +74,21 @@ class Scheduler:
         self.config.mark("sync", "last_auto_date", day)
         self.db.audit("system", "sync_start", f"定时同步 #{run_id}：{start} ~ {end}", via="system")
         log.info("定时同步已发起 #%s：%s ~ %s", run_id, start, end)
+
+    def _recheck(self, now: datetime) -> None:
+        """核对没对上的日子到时间了就整天重新拉一次。有任务在跑（包括刚发起的定时同步）就等它跑完。"""
+        if not self.config.get("sync")["enabled"] or self.engine.active():
+            return
+        days = self.engine.recheck_due(int(now.timestamp()))
+        if not days:
+            return
+        try:
+            run_id = self.engine.start(days[0], days[-1], "recheck", "system")
+        except SyncError as e:
+            log.info("核对补拉暂缓：%s", e)
+            return
+        self.db.audit("system", "sync_start", f"核对补拉 #{run_id}：{days[0]} ~ {days[-1]}（{'、'.join(days)} 的数据核对没对上）", via="system")
+        log.info("核对补拉已发起 #%s：%s", run_id, "、".join(days))
 
     def start(self) -> None:
         if self._thread is None:

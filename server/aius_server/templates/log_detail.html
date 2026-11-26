@@ -6,7 +6,7 @@
 
 {% block content %}
 <div class="stats">
-  <div class="stat"><div class="label">状态</div><div class="value small-value">{{ run_status(run) }}</div><div class="hint">{{ run.actor_name }} · {{ "定时" if run.trigger == "schedule" else "手动" }}{% if run.resume_count %} · 续跑 {{ run.resume_count }} 次{% endif %}</div></div>
+  <div class="stat"><div class="label">状态</div><div class="value small-value">{{ run_status(run) }}</div><div class="hint">{{ run.actor_name }} · {{ {"schedule": "定时", "recheck": "核对补拉"}.get(run.trigger, "手动") }}{% if run.resume_count %} · 续跑 {{ run.resume_count }} 次{% endif %}</div></div>
   <div class="stat"><div class="label">数据日期</div><div class="value small-value">{{ run.start_date }}{% if run.end_date != run.start_date %} ~ {{ run.end_date }}{% endif %}</div><div class="hint">完成 {{ run.done }} / {{ run.stats.units }} 个数据集</div></div>
   <div class="stat"><div class="label">写入（条）</div><div class="value small-value">{{ run.total_rows|num }}</div><div class="hint">{{ run.stats.pages }} 次接口分页</div></div>
   <div class="stat"><div class="label">用时</div><div class="value small-value">{{ run.seconds|duration }}</div><div class="hint">{{ run.started_at|ts("还没开始") }} 开始</div></div>

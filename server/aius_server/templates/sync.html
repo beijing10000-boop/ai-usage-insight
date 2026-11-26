@@ -120,7 +120,7 @@
 
 <section class="panel" id="schedule">
   <div class="section-head">
-    <div><h2>定时同步</h2><p>每天到点自动同步前几天的数据{% if schedule.last_auto_date %}（上次是 {{ schedule.last_auto_date }}）{% endif %}；当天的用量日志每隔几分钟增量更新</p></div>
+    <div><h2>定时同步</h2><p>每天到点自动同步前几天的数据{% if schedule.last_auto_date %}（上次是 {{ schedule.last_auto_date }}）{% endif %}；当天的用量日志每隔几分钟增量更新；数据核对没对上的日子每 {{ checks.recheck_rule.hours }} 小时自动重新拉一次（见下面「数据核对」）</p></div>
   </div>
   {% if schedule.enabled and schedule.live_minutes %}
   {% if live.at %}
@@ -200,10 +200,12 @@
       </tbody>
     </table>
   </div>
-  <p class="help">怎么处理：对这几天重新手动同步（每天整批替换，不会重复），同步完会自动再核对。
-    {% if checks.diff|selectattr("usage_date", "equalto", checks.yesterday)|list %}昨天的统计详情可能还没出齐（T+1），下一次定时同步会重新拉、再核对。{% endif %}
-    {% if checks.diff|selectattr("detail_count", "equalto", 0)|list %}统计详情为 0 的日子，是在当天同步的（统计详情第二天才有），之后还没再整天同步过：对它重新同步一次即可。{% endif %}
-    重新同步后仍对不上，说明飞书两个接口给的数据本身不一致，可以把日期和人员反馈给飞书。</p>
+  {% set rule = checks.recheck_rule %}
+  <p class="help">飞书的用量日志和统计详情有时要晚很久才出全。开着定时同步时，最近 {{ rule.days }} 天里对不上的日子会每 {{ rule.hours }} 小时自动整天重新拉一次、再核对，每天最多 {{ rule.max }} 次（重新拉到的比库里少就保留原数据）。
+    {% for r in checks.recheck %}{{ r.day }}：已自动补拉 {{ r.tries }} 次，{% if r.next_at is none %}不再自动补拉{% elif not schedule.enabled %}定时同步关着，不会自动补拉{% elif r.due %}马上补拉{% else %}下次约 {{ r.next_at|clock }}{% endif %}{{ "；" if not loop.last else "。" }}{% endfor %}</p>
+  <p class="help">也可以对这几天手动重新同步（每天整批替换，不会重复），同步完会自动再核对。
+    {% if checks.diff|selectattr("detail_count", "equalto", 0)|list %}统计详情为 0 的日子，是在统计详情出来之前同步的（第二天才有），重新拉一次就有了。{% endif %}
+    补拉、重新同步后仍对不上，说明飞书两个接口给的数据本身不一致，可以把日期和人员反馈给飞书。</p>
   {% endif %}
 </section>
 {% endblock %}
