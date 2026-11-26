@@ -13,6 +13,9 @@
 留给人工、不自动处理的：「使用人」没填或填了不止一个人、这个人单独设置了追加额度、同一个人还有另一张申请在办理中、
 到办理节点才发现他本月已经追加过。
 
+被退回让申请人修改、改完重新提交的，还是同一张单：认成别的资源申请的单子每 RECHECK_SECONDS 秒重新读一次表单
+（资源名称、类别改对了就接着处理）；还没同意的额度申请每次都按最新的表单认使用人。
+
 三种模式：关闭；只预览（照样看单子、算出每张会怎么处理，记在 plan 里，但不评论、不审批、不动用户组）；自动处理。
 每月 1 日把用户组清空（追加额度只在当月有效）；只在「自动处理」开着、跨月的时候清，刚打开时不清。
 自动写的评论和审批意见都以 TAG 开头：是以审批人本人的身份发的，带上标注才分得清。
@@ -35,6 +38,7 @@ from .report import points
 log = logging.getLogger("aius")
 
 CHECK_SECONDS = 60  # 多久看一次审批单
+RECHECK_SECONDS = 300  # 认成别的资源申请的单子，隔多久重新读一次表单（被退回改了资源名称、类别后重新提交，还是同一张单）
 LOOKBACK_DAYS = 60  # 只看最近这么多天发起的
 TAG = "【自动处理】"
 STATUS = {
@@ -206,7 +210,9 @@ class TopUps:
                 for code in pending:
                     row = known.get(code)
                     if row and row["kind"] != "quota":
-                        continue
+                        if time.time() - row["updated_at"] < RECHECK_SECONDS:
+                            continue
+                        row = None  # 隔一阵重新认一遍：可能被退回、改对了资源名称或类别
                     try:
                         state["acted"] += bool(self._one(code, row, cfg, live, now, rnd))
                     except FeishuError as e:
@@ -225,6 +231,8 @@ class TopUps:
         inst = self.feishu.approval_instance(code)
         if row is None:
             row = self._classify(code, inst, cfg)
+        elif row["status"] not in ("approved", "granted", "closed"):
+            row = self._refresh(code, row, inst)
         if row["kind"] != "quota":
             return False
         task = next((t for t in inst.get("task_list") or [] if t.get("status") == "PENDING" and cfg["approver"] in (t.get("open_id"), t.get("user_id"))), None)
@@ -237,14 +245,29 @@ class TopUps:
             return self._handle_stage(code, row, task, cfg, live, now, rnd)
         return False
 
+    @staticmethod
+    def _filled(form: list[dict]) -> dict:
+        """表单里会被退回修改、处理时要用的几项：使用人（只认填了一个人的）、资源名称、申请原因。"""
+        users = field(form, "使用人").get("open_ids") or []
+        return {
+            "member": users[0] if len(users) == 1 else "",
+            "resource": text_of(field(form, "资源名称").get("value"))[:100], "reason": text_of(field(form, "申请原因").get("value"))[:300],
+        }  # fmt: skip
+
+    def _refresh(self, code: str, row: dict, inst: dict) -> dict:
+        """还没同意的单子按现在的表单更新使用人等（被退回、改成只填一个人后重新提交，还是同一张单）。"""
+        filled = self._filled(form_fields(inst.get("form")))
+        changed = {k: v for k, v in filled.items() if row[k] != v}
+        if changed:
+            self.db.x(f"UPDATE topup_requests SET {', '.join(f'{k}=?' for k in changed)} WHERE instance_code=?", (*changed.values(), code))
+        return {**row, **changed}
+
     def _classify(self, code: str, inst: dict, cfg: dict) -> dict:
         form = form_fields(inst.get("form"))
         quota = is_quota_request(form, cfg["category"])
-        users = field(form, "使用人").get("open_ids") or []
         row = {
             "instance_code": code, "serial": str(inst.get("serial_number") or ""), "kind": "quota" if quota else "other",
-            "applicant": str(inst.get("open_id") or ""), "member": users[0] if len(users) == 1 else "",
-            "resource": text_of(field(form, "资源名称").get("value"))[:100], "reason": text_of(field(form, "申请原因").get("value"))[:300],
+            "applicant": str(inst.get("open_id") or ""), **self._filled(form),
             "submitted_at": int(int(inst.get("start_time") or 0) / 1000), "month": "", "status": "pending" if quota else "other",
             "used": None, "note": "", "plan": "", "commented": "", "approved_at": None, "granted_at": None, "updated_at": int(time.time()),
         }  # fmt: skip
