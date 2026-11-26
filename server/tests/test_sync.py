@@ -11,8 +11,8 @@ from aius_server.analytics import Filter
 from aius_server.db import dumps, loads
 from aius_server.feishu import LEGACY_APP_ENTITY_TYPES, FeishuError, day_range
 from aius_server.labels import APP_ENTITY_TYPES
-from aius_server.sync import LIVE_CURSOR, LIVE_OVERLAP, SyncError, segments, today
-from conftest import D0, D1, D2, MEMBER_D1, app_log, log, stamped
+from aius_server.sync import LIVE_CURSOR, LIVE_OVERLAP, RECHECK_DAYS, RECHECK_HOURS, RECHECK_MAX, SyncError, segments, today
+from conftest import D0, D1, D2, MEMBER_D1, app_log, detail, log, stamped
 
 
 def count(env, table: str, where: str = "1=1") -> int:
@@ -410,6 +410,55 @@ def test_each_sync_checks_the_logs_against_feishu_details_person_by_person(env):
     run = env.sync(D2, D1)
     assert run["steps"][0]["status"] == "ok" and run["steps"][0]["message"].startswith("2 天的用量日志和飞书统计详情逐人核对一致")
     assert env.ctx.engine.checks()["diff"] == []
+
+
+def test_days_that_do_not_match_are_pulled_again_every_few_hours_until_they_do(env):
+    """飞书的日志和统计详情有时要晚很久才出全：核对没对上的日子，离上次核对满 RECHECK_HOURS 小时就该整天重新拉一次。"""
+    engine = env.ctx.engine
+    checked = env.db.val("SELECT MAX(checked_at) FROM reconcile")
+    status = engine.recheck_status(checked)
+    assert [(r["day"], r["tries"], r["due"]) for r in status] == [(D2, 0, False), (D1, 0, False)]  # 测试数据里两天都对不上
+    assert status[0]["next_at"] == checked + RECHECK_HOURS * 3600
+    assert engine.recheck_due(checked + RECHECK_HOURS * 3600 - 60) == []
+    assert engine.recheck_due(checked + RECHECK_HOURS * 3600) == [D2, D1]
+
+    # 补拉一次：D1 的日志和统计详情都出全了，D2 的统计详情还没有
+    env.feishu.usage[("detail", "member", D1)] += [detail("ou_dave", usage_value_ai_notes_quota=1), detail("ou_erin", usage_value_general_ai_quota=5)]
+    env.feishu.usage[("detail", "app", D1)] += [detail("spring_b__c", 6, usage_value_feishu_aily_quota=40)]
+    run_id = engine.start(D2, D1, "recheck", "system")
+    engine.run_pending()
+    assert engine.run(run_id)["status"] == "success"
+    status = engine.recheck_status()
+    assert [(r["day"], r["tries"]) for r in status] == [(D2, 1)]  # D1 对上了，不用再拉
+    created = engine.run(run_id)["created_at"]
+    assert status[0]["next_at"] >= created + RECHECK_HOURS * 3600 and not status[0]["due"]
+    assert engine.checks()["recheck"] == status
+
+    # 拉满次数就不再自动拉，留给人看
+    for _ in range(RECHECK_MAX - 1):
+        engine.start(D2, D2, "recheck", "system")
+        engine.run_pending()
+    assert engine.recheck_status() == [{"day": D2, "tries": RECHECK_MAX, "next_at": None, "due": False}]
+
+
+def test_only_recent_days_are_pulled_again(empty):
+    old = (today() - timedelta(days=RECHECK_DAYS + 1)).isoformat()
+    empty.feishu.usage[("log", "member", old)] = stamped([log("ou_bob", "d-rd", "知识问答", 3)], old)  # 没有统计详情：对不上
+    empty.sync(old, old)
+    assert empty.ctx.engine.checks()["diff"] and empty.ctx.engine.recheck_status() == []
+
+
+def test_a_recheck_never_replaces_a_day_with_less_than_we_already_have(env):
+    engine = env.ctx.engine
+    env.feishu.usage[("log", "member", D1)] = stamped(MEMBER_D1[:2], D1)  # 这次飞书少给了
+    run_id = engine.start(D1, D1, "recheck", "system")
+    engine.run_pending()
+    step = next(s for s in engine.run(run_id)["steps"] if s["dataset"] == "log_member")
+    assert step["status"] == "kept" and "核对补拉" in step["message"] and count(env, "usage_logs", f"usage_date='{D1}' AND subject='member'") == 5
+    env.feishu.usage[("log", "member", D1)] = stamped([*MEMBER_D1, log("ou_frank", "d-sales", "知识问答", 2, hour=16)], D1)  # 晚到的补上了
+    engine.start(D1, D1, "recheck", "system")
+    engine.run_pending()
+    assert count(env, "usage_logs", f"usage_date='{D1}' AND subject='member'") == 6 and agg_matches_logs(env)
 
 
 def test_today_and_days_past_the_log_retention_are_not_checked(empty):

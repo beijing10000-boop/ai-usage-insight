@@ -46,6 +46,12 @@ MAX_PAGES = 20000
 # 当天增量同步每次往回多拉一段：飞书的日志要晚一分多钟才查得到（实测 2026-11），留足余量
 LIVE_OVERLAP = 600
 LIVE_CURSOR = "live_cursor"  # meta：{"until": 拉到的时间戳, "gen": 整天替换过几次未过完的日子}
+# 核对没对上的日子自动补拉：飞书的日志和统计详情有时要晚很久才出全（实测 2026-11-25 下午有一段 15 分钟的日志，
+# 当晚的增量同步和第二天 5 点的定时同步都没拿到，第二天中午才查得到；统计详情 5 点时也还是空的）。
+# 最近 RECHECK_DAYS 天里核对没对上的日子，离上次核对满 RECHECK_HOURS 小时就整天重新拉一次，每天最多 RECHECK_MAX 次
+RECHECK_DAYS = 3
+RECHECK_HOURS = 2
+RECHECK_MAX = 6
 LIVE_LAST = "live_last"  # meta：最近一次增量同步的结果（同步管理页显示）
 LOG_INSERT = (
     "INSERT INTO usage_logs(usage_date, subject, ts, entity_type, entity_id, entity_name, department_id, "
@@ -216,6 +222,7 @@ class SyncEngine:
         errors: list[str] = []
         app_types = APP_ENTITY_TYPES
         current_day = today().isoformat()
+        recheck = row["trigger"] == "recheck"  # 核对补拉只为补上晚到的数据：飞书这次给得更少就不覆盖
         try:
             for day, dataset in units:
                 key = f"{day}|{dataset}"
@@ -228,7 +235,7 @@ class SyncEngine:
                     continue
                 try:
                     collected, pages, app_types, fetched_at = self._fetch(run_id, kind, subject, day, app_types)
-                    kept = self._keep_existing(kind, subject, day, len(collected), app_types)
+                    kept = self._keep_existing(kind, subject, day, len(collected), app_types, recheck)
                     if kept:  # 飞书这次给的比库里已有的少（过了保留期、或者接口返回空）：不覆盖
                         stats["pages"] += pages
                         done.add(key)
@@ -351,12 +358,13 @@ class SyncEngine:
             params += list(app_types)
         return scope, params
 
-    def _keep_existing(self, kind: str, subject: str, day: str, fetched: int, app_types: tuple[int, ...]) -> str:
+    def _keep_existing(self, kind: str, subject: str, day: str, fetched: int, app_types: tuple[int, ...], recheck: bool = False) -> str:
         """这次拉到的数据要不要放弃、保留库里已有的。要保留时返回写进执行日志的原因，否则返回空串。
 
         - 飞书的用量日志只保留最近一年，一年前的日子再同步会返回空（或者只剩一部分）。库里早先同步下来的
           比飞书现在给的多，就保留库里的——那是已经查不到的数据，整批替换就等于把它删了。
         - 任何日子，库里有数据而飞书这次一条都没给，也不覆盖：用量记录不会凭空消失，更可能是接口那边的问题。
+        - 核对补拉（recheck）是为了补上晚到的数据：飞书这次给的比库里少，就不覆盖，免得越补越少。
         库里本来没有、或者飞书给的不比库里少的，照常整批替换。"""
         scope, params = self._scope(subject, day, app_types)
         table = "usage_logs" if kind == "log" else "usage_details"
@@ -370,6 +378,8 @@ class SyncEngine:
             return f"{note}，这次只返回了 {fetched:,} 条{label}，库里已有 {existing:,} 条：保留原数据，没有覆盖"
         if fetched == 0:
             return f"飞书这次没有返回这一天的{label}，库里已有 {existing:,} 条：保留原数据，没有覆盖。如果确认飞书那边的数据确实没有了，请联系管理员处理"
+        if recheck:
+            return f"核对补拉时飞书只返回了 {fetched:,} 条{label}，比库里已有的 {existing:,} 条少：保留原数据，没有覆盖"
         return ""
 
     def _write(
@@ -538,7 +548,33 @@ class SyncEngine:
             "checked_days": len({r["usage_date"] for r in rows}),
             "diff": [r for r in rows if r["mismatched"]],
             "yesterday": (today() - timedelta(days=1)).isoformat(),
+            "recheck": self.recheck_status(),
+            "recheck_rule": {"days": RECHECK_DAYS, "hours": RECHECK_HOURS, "max": RECHECK_MAX},
         }
+
+    # ---------- 核对补拉 ----------
+    def recheck_status(self, now: int | None = None) -> list[dict]:
+        """最近 RECHECK_DAYS 天里核对没对上的日子（从早到晚），每天：自动补拉过几次（tries）、下次什么时候补拉（next_at，
+        不再补拉时为 None）。离这一天上次核对、上次发起补拉都满 RECHECK_HOURS 小时才再拉；补拉满 RECHECK_MAX 次就不再拉，
+        剩下的交给人看（手动同步或者反馈给飞书）。"""
+        now = int(now or time.time())
+        since = (today() - timedelta(days=RECHECK_DAYS)).isoformat()
+        out = []
+        for r in self.db.q(
+            "SELECT usage_date, MAX(checked_at) AS checked FROM reconcile WHERE usage_date>=? GROUP BY usage_date HAVING SUM(mismatched)>0 ORDER BY usage_date",
+            (since,),
+        ):
+            day = r["usage_date"]
+            tries, last = self.db.one(
+                "SELECT COUNT(*), MAX(created_at) FROM sync_runs WHERE trigger='recheck' AND start_date<=? AND end_date>=?", (day, day)
+            )
+            next_at = None if tries >= RECHECK_MAX else max(r["checked"] or 0, last or 0) + RECHECK_HOURS * 3600
+            out.append({"day": day, "tries": tries, "next_at": next_at, "due": next_at is not None and next_at <= now})
+        return out
+
+    def recheck_due(self, now: int | None = None) -> list[str]:
+        """现在该自动补拉的日子（从早到晚）。"""
+        return [r["day"] for r in self.recheck_status(now) if r["due"]]
 
     def _check_view(self, row: sqlite3.Row) -> dict:
         out = dict(row)

@@ -26,7 +26,7 @@
           <td class="nowrap">#{{ r.id }}</td>
           <td class="nowrap">{{ r.start_date }}{% if r.end_date != r.start_date %} ~ {{ r.end_date }}{% endif %}</td>
           <td>{{ run_status(r) }}{% if r.resume_count %}<small>续跑 {{ r.resume_count }} 次</small>{% endif %}</td>
-          <td>{{ r.actor_name }}<small>{{ "定时" if r.trigger == "schedule" else "手动" }}</small></td>
+          <td>{{ r.actor_name }}<small>{{ {"schedule": "定时", "recheck": "核对补拉"}.get(r.trigger, "手动") }}</small></td>
           <td class="nowrap" title="{{ r.started_at|ts }}">{{ r.started_at|ts("还没开始") }}</td>
           <td class="num">{{ r.seconds|duration }}</td>
           <td class="num">{{ r.total_rows|num }}</td>
